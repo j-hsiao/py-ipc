@@ -8,5 +8,5 @@ setup(
     author='Jason Hsiao',
     author_email='oaishnosaj@gmail.com',
     description='Interprocess communication (sockets, shared memory, etc)',
-    packages=['jhsiao.ipc'],
+    packages=['jhsiao', 'jhsiao.ipc'],
 )
