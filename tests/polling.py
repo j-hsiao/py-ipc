@@ -38,6 +38,7 @@ if __name__ == '__main__':
                 written += wrote
         except socket.timeout:
             print('done')
+            print('filled at', written)
         assert not any(p.poll(1))
         buf = memoryview(bytearray(8192))
         s.settimeout(1)
@@ -47,12 +48,13 @@ if __name__ == '__main__':
             res = p.poll(1)
             while not res[1]:
                 received += s.recv_into(buf)
-                res = p.poll(1)
+                res = p.poll(0)
             print('unblocked at', received, list(map(len, res)))
             while 1:
                 received += s.recv_into(buf)
         except socket.timeout:
             print('done')
+            print('received total of', received)
         assert written == received
     finally:
         p.close()
