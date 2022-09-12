@@ -393,7 +393,7 @@ class MultiError(Exception):
     def __init__(self, errors):
         Exception.__init__(
             self,
-            '\n'.join(['socket creation failed:']+[e.msg for e in errors]))
+            '\n'.join(['socket creation failed:']+[str(e.args) for e in errors]))
         self.errors = errors
 
 def bind_inet(
