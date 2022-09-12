@@ -109,7 +109,7 @@ def _get_ip(cmd, header, search):
         # ipconfig, ip, ifconfig all have
         # each section in similar format where 1st line is unindented
         # and following lines are
-        if re.match('^\\S', line):
+        if re.match(r'^\S', line):
             chunks.append([line])
         elif line.strip():
             chunks[-1].append(line)
@@ -391,7 +391,9 @@ class MultiError(Exception):
     errors attribute = list of exceptions, 1 per alternative.
     """
     def __init__(self, errors):
-        Exception.__init__(self, 'bind failed')
+        Exception.__init__(
+            self,
+            '\n'.join(['socket creation failed:']+[e.msg for e in errors]))
         self.errors = errors
 
 def bind_inet(
@@ -401,10 +403,13 @@ def bind_inet(
 
     timeout will be used for accepted sockets as well as
     the listener socket itself.
+    Falsey host is shorthand for ipv4 all interfaces '0.0.0.0'.
     """
     orig = host
     if isinstance(host, tuple):
         host, port = host[:2]
+    if host == '':
+        host = '0.0.0.0'
     addrs = socket.getaddrinfo(host, port, family, tp, proto, flags)
     errors = []
     cloexecflag = SOCK_CLOEXEC if cloexec else 0
@@ -437,12 +442,15 @@ def connect_inet(
 
     hostOrAddr: tuple of (host,port) (like from getsockname()) or just host.
         port: port to bind to if hostOrAddr is just host.
+    Falsey host is shorthand for ipv4 localhost '127.0.0.1'.
     """
     if isinstance(hostOrAddr, tuple):
         # ipv6 gives a 4-tuple, only need the first 2
         host, port = hostOrAddr[:2]
     else:
         host = hostOrAddr
+    if not host:
+        host = '127.0.0.1'
     addrs = socket.getaddrinfo(host, port, family, tp, proto, flags)
     errors = []
     cloexecflag = SOCK_CLOEXEC if cloexec else 0
@@ -462,7 +470,7 @@ def connect_inet(
                 # Convert all interfaces to localhost.
                 if af == socket.AF_INET6 and addr[0] == '::':
                     addr = ('::1', addr[1])
-                elif af == socket.AF_INET and addr[0] in ('', '0.0.0.0'):
+                elif af == socket.AF_INET and addr[0] == '0.0.0.0':
                     addr = ('127.0.0.1', addr[1])
                 s.connect(addr[:2])
                 s.settimeout(timeout)
