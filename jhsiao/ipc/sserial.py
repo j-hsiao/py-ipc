@@ -9,200 +9,307 @@ preimplemented:
     floats
     str (utf-8)
     binary string (bytes, bytearray, memoryview, buffer (python2))
+
+
 """
 import struct
 import sys
 import pickle
 import io
+from functools import partial
 
-class BaseSerializer(object):
-    """Base interface for serializing some type.
+def NONE(top, dsize, lsize):
+    def dump(item, f):
+        pass
+    def load(f):
+        return None
+    return dump, load, (type(None),)
 
-    TYPES must be a tuple.
-    """
-    TYPES = ()
-    def __init__(self, code):
-        self.code = code
+def indep(ret, top, dsize, lsize):
+    """Serializers independent of top/dsize/lsize."""
+    return ret
 
-    @staticmethod
-    def dump(item, f, top):
-        """serialize item into f.
+def Fixed(name, code, tp):
+    s = struct.Struct(code)
+    pack = s.pack
+    unpack = s.unpack
+    size = s.size
 
-        top is the toplevel serializer.
-        """
-        raise NotImplementedError
-    @staticmethod
-    def load(f, top):
-        """deserialize item from f.
+    def dump(item, f):
+        f.write(pack(item))
 
-        top is the toplevel serializer.
-        """
-        raise NotImplementedError
-
-class _FixedNum(BaseSerializer):
-    """Fixed width number.
-
-    Subclass should add a class attribute s which is a struct.Struct.
-    """
-    @classmethod
-    def dump(cls, item, f, top):
-        f.write(cls.s.dump(item))
-
-    @classmethod
-    def load(cls, f, top):
-        s = cls.s
-        return s.load(f.read(s.size))[0]
-
+    def load(f):
+        return unpack(f.read(size))[0]
+    return dump, load, (tp,)
 Fixed = {
-    name: type(name, (_FixedNum,), dict(s=struct.Struct(code)))
-    for name, code in (
-        ('Int8', '>b'),
-        ('Int16', '>h'),
-        ('Int32', '>l'),
-        ('Int64', '>q'),
-        ('Uint8', '>B'),
-        ('Uint16', '>H'),
-        ('Uint32', '>L'),
-        ('Uint64', '>Q'),
-        ('Float32', '>f'),
-        ('Float64', '>d'))
+    _[0]: partial(indep, Fixed(*_))
+    for _ in (
+        ('Int8', '>b', int),
+        ('Int16', '>h', int),
+        ('Int32', '>l', int),
+        ('Int64', '>q', int),
+        ('Uint8', '>B', int),
+        ('Uint16', '>H', int),
+        ('Uint32', '>L', int),
+        ('Uint64', '>Q', int),
+        ('Float32', '>f', float),
+        ('Float64', '>d', float))
 }
-class CompactNum(BaseSerializer):
-    """Use as few bytes as possible to store number."""
-    TYPES = (int,)
-    UINFO = (
-        (0xFF, b'>B'),
-        (0xFFFF, b'>H'),
-        (0xFFFFFFFF, b'>L'),
-        (0xFFFFFFFFFFFFFFFF, b'>Q'))
-    IINFO = (
-        (-1 - 0x7F, b'>b'),
-        (-1 - 0x7FFF, b'>h'),
-        (-1 - 0x7FFFFFFF, b'>l'),
-        (-1 - 0x7FFFFFFFFFFFFFFF, b'>q'))
+def mincode(length):
+    """Return the minimum struct code to hold length."""
+    nbits = length.bit_length()
+    for i, code in enumerate('BHLQ'):
+        if nbits <= 8 * (2**i):
+            return '>'+code
+    else:
+        raise ValueError('length too large: {}'.format(length))
 
-    @classmethod
-    def dump(cls, item, f, top):
-        if item >= 0:
-            for thresh, code in cls.UINFO:
-                if item <= thresh:
-                    f.write(code[1:])
-                    f.write(struct.pack(code, item))
-                    return
-            f.write(b'P')
-            pickle.dump(item, f)
+def CompactNum():
+    if 1:
+        UDUMP = []
+        IDUMP = []
+        LOAD = []
+        bytestruct = struct.Struct(b'>B')
+        for dumpers, codes in (
+                (UDUMP, ('>B', '>H', '>L', '>Q')),
+                (IDUMP, ('>b', '>h', '>l', '>q'))):
+            for i, code in enumerate(codes):
+                if i:
+                    lo = hi
+                else:
+                    lo = 0
+                s = struct.Struct(code)
+                hi = s.size*8 + 1
+                idx = bytestruct.pack(len(LOAD))
+                for _ in range(lo, hi):
+                    dumpers.append((idx, s.pack))
+                LOAD.append((s.size, s.unpack))
+        DUMPS = (IDUMP, UDUMP)
+        def dump(item, f):
+            try:
+                if item >= 0:
+                    idx, packer = UDUMP[item.bit_length()]
+                else:
+                    idx, packer = IDUMP[(-1 - item).bit_length()+1]
+            except IndexError:
+                f.write(bytestruct.pack(len(LOAD)))
+                pickle.dump(item, f)
+            else:
+                f.write(idx)
+                f.write(packer(item))
+
+        if sys.version_info.major > 2:
+            def load(f):
+                try:
+                    size, unpacker = LOAD[f.read(1)[0]]
+                except IndexError:
+                    return pickle.load(f)
+                else:
+                    return unpacker(f.read(size))[0]
         else:
-            for thresh, code in cls.IINFO:
-                if item >= thresh:
-                    f.write(code[1:])
-                    f.write(struct.pack(code, item))
-                    return
-            f.write(b'P')
-            pickle.dump(item, f)
+            def load(f):
+                try:
+                    size, unpacker = LOAD[memoryview(f.read(1))[0]]
+                except IndexError:
+                    return pickle.load(f)
+                else:
+                    return unpacker(f.read(size))[0]
 
-    @staticmethod
-    def load(f, top):
-        code = f.read(1)
-        if code == b'P':
-            return pickle.load(f)
-        else:
-            s = struct.Struct(b'>'+code)
-            return s.unpack(f.read(s.size))[0]
+    else:
+        UINFO = (
+            (0xFF, b'>B'),
+            (0xFFFF, b'>H'),
+            (0xFFFFFFFF, b'>L'),
+            (0xFFFFFFFFFFFFFFFF, b'>Q'))
+        IINFO = (
+            (-1 - 0x7F, b'>b'),
+            (-1 - 0x7FFF, b'>h'),
+            (-1 - 0x7FFFFFFF, b'>l'),
+            (-1 - 0x7FFFFFFFFFFFFFFF, b'>q'))
 
+        def dump(item, f):
+            if item >= 0:
+                for thresh, code in UINFO:
+                    if item <= thresh:
+                        f.write(code)
+                        f.write(struct.pack(code, item))
+                        return
+                f.write(b'<P')
+                pickle.dump(item, f)
+            else:
+                for thresh, code in IINFO:
+                    if item >= thresh:
+                        f.write(code)
+                        f.write(struct.pack(code, item))
+                        return
+                f.write(b'<P')
+                pickle.dump(item, f)
 
-class Binstr(BaseSerializer):
-    """Serialize a bytes."""
+        def load(f):
+            code = f.read(2)
+            if code == b'<P':
+                return pickle.load(f)
+            else:
+                s = struct.Struct(code)
+                return s.unpack(f.read(s.size))[0]
+    return dump, load, (int,)
+
+CompactNum = partial(indep, CompactNum())
+
+def Binstr(top, dsize, lsize):
+    """A bytes."""
     TYPES = (bytes, bytearray, memoryview)
     if sys.version_info.major < 3:
         TYPES += (buffer,)
 
-    @staticmethod
-    def dump(item, f, top):
-        CompactNum.dump(len(item), f, top)
+    def dump(item, f):
+        dsize(len(item), f)
         f.write(item)
+    def load(f):
+        return f.read(lsize(f))
+    return dump, load, TYPES
 
-    @staticmethod
-    def load(f, top):
-        length = CompactNum.load(f, top)
-        return f.read(length)
-
-class Str(BaseSerializer):
+def Str(top, dsize, lsize):
     if sys.version_info.major > 2:
         TYPES = (str,)
     else:
         TYPES = (unicode,)
+    def dump(item, f):
+        item = item.encode('utf-8')
+        dsize(len(item), f)
+        f.write(item)
+    def load(f):
+        return f.read(lsize(f)).decode('utf-8')
+    return dump, load, TYPES
 
-    @staticmethod
-    def dump(item, f, top):
-        Binstr.dump(item.encode('utf-8'), f, top)
-
-    @staticmethod
-    def load(f, top):
-        return Binstr.load(f, top).decode('utf-8')
-
-
-class List(BaseSerializer):
-    TYPES = (list, tuple)
-
-    @staticmethod
-    def dump(item, f, top):
-        CompactNum.dump(len(item), f, top)
+def SimpleList(top, dsize, lsize):
+    """Simple non-recursive list."""
+    tdump = top.dump
+    tload = top.load
+    def dump(item, f):
+        dsize(len(item), f)
         for thing in item:
-            top.dump(thing, f)
+            tdump(thing, f)
+    def load(f):
+        return [tload(f) for i in range(lsize(f))]
+    return dump, load, (list, tuple)
 
-    @staticmethod
-    def load(f, top):
-        return [top.load(f) for i in range(CompactNum.load(f, top))]
+def SimpleTuple(top, dsize, lsize):
+    """Simple non-recursive tuple."""
+    ldump, lload, _ = SimpleList(top, dsize, lsize)
+    def load(f):
+        return tuple(lload(f))
+    return ldump, load, (tuple,)
 
+def SimpleDict(top, dsize, lsize):
+    """Simple non-recursive dict."""
+    tdump = top.dump
+    tload = top.load
+    def dump(item, f):
+        dsize(len(item), f)
+        for k, v in item.items():
+            tdump(k, f)
+            tdump(v, f)
+    def load(f):
+        return {tload(f): tload(f) for i in range(lsize(f))}
+    return dump, load, (dict,)
 
-class Dict(BaseSerializer):
-    pass
+# TODO implement handling for recursive list/dict
 
 
 class Serializer(object):
     """Serialize general items."""
-    def __init__(self, serializers=(CompactNum, Str, Binstr, Fixed['Float64'], List, Dict)):
+    class Pre(object):
+        def __init__(self, data):
+            self.data = data
+            def dump(f):
+                f.write(data)
+            self.dump = dump
+        def dump(self, f):
+            f.write(self.data)
+
+    def __init__(
+        self, serializers=(
+            CompactNum, Binstr, Str, Fixed['Float64'],
+            SimpleTuple, SimpleList, SimpleDict, NONE),
+        size=Fixed['Uint64']):
         """Initialize a Serializer.
 
-        load/dump must occur with the same serializers in the same
-        order.  Earlier serializers with matching TYPES will be used
-        first.  For example, if distinguishing between bytearray and
-        bytes is important, then you should implement a BaseSerializer
-        for bytearrays and put it earlier in the list of serializers
-        """
-        for thresh, code in CompactNum.UINFO:
-            if len(serializers) <= thresh:
-                s = struct.Struct(code)
-                break
-        else:
-            raise Exception('too many types for serialization')
-        self.typemap = {}
-        self.codemap = {}
-        self.sers = []
-        for i, ser in enumerate(serializers):
-            code = s.pack(i)
-            dumper = ser.dump, code
-            for tp in ser.TYPES:
-                self.typemap.setdefault(tp, dumper)
-            self.codemap[code] = ser.load
+        serializers: A sequence of functions with signature func(top, size)
+            which returns 3 items: dump, load, and tuple of types.
+            Order matters.
+        size: Same type as an item of serializers which is used for sizes.
+            Alternatively, an index into serializers to use.
+        dump/load methods are only applicable for Serializers with
+        matching arguments.
 
-    def dump(self, item, f):
+        size should be independent of the Serializer.
+        """
+        if isinstance(size, int):
+            size = serialiers[size]
+        packer = struct.Struct(mincode(len(serializers)+1))
+        codesize = self.codesize = packer.size
+        typemap = self.typemap = {}
+        codemap = self.codemap = {}
+        sers = self.sers = []
+        dsize, lsize, _ = size(None, None, None)
+        #closure is faster? testing
+        def dump(item, f, subclassok=True):
+            """Dump item to a file-like object."""
+            tp = type(item)
+            try:
+                func, code = typemap[tp]
+            except KeyError:
+                if subclassokay:
+                    for ser in sers:
+                        tps = ser.TYPES
+                        if issubclass(tp, tps):
+                            func, code = typemap[tp] = typemap[tps[0]]
+                raise ValueError('Serialization of type {} is unknown'.format(tp))
+            f.write(code)
+            func(item, f)
+        def load(f):
+            """Load from a file-like object."""
+            return codemap[f.read(codesize)](f)
+        self.dump = dump
+        self.load = load
+
+        for i, ser in enumerate(serializers):
+            dump, load, types = ser(self, dsize, lsize)
+            code = packer.pack(i+1)
+            dumper = dump, code
+            for tp in types:
+                typemap.setdefault(tp, dumper)
+            codemap[code] = load
+        typemap.setdefault(self.Pre, (self.Pre.dump, b''))
+
+    def dump(self, item, f, subclassok=True):
         """Dump item to a file-like object."""
-        func, code = self(type(item))
+        tp = type(item)
+        try:
+            func, code = self.typemap[tp]
+        except KeyError:
+            if subclassokay:
+                for ser in self.serializers:
+                    tps = ser.TYPES
+                    if issubclass(tp, tps):
+                        func, code = self.typemap[tp] = self.typemap[tps[0]]
+            raise ValueError('Serialization of type {} is unknown'.format(tp))
         f.write(code)
-        func(item, f, self)
+        func(item, f)
 
     def load(self, f):
         """Load from a file-like object."""
-        return self.codemap[f.read(1)](f, self)
+        return self.codemap[f.read(self.codesize)](f)
 
-    def dumps(self, item):
+
+    def dumps(self, item, subclassok=True):
         """Dump item to bytes."""
         # or maybe even SeqWriter?
         # followed by b''.join()
         # would need profiling
         with io.BytesIO() as f:
-            self.dump(item, f)
+            self.dump(item, f, subclassok)
             return f.getvalue()
 
     def loads(self, data):
