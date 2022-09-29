@@ -9,14 +9,14 @@ preimplemented:
     floats
     str (utf-8)
     binary string (bytes, bytearray, memoryview, buffer (python2))
-
-
 """
 import struct
 import sys
 import pickle
 import io
 from functools import partial
+from collections import deque
+from numbers import Integral, Real
 
 def NONE(top, dsize, lsize):
     def dump(item, f):
@@ -40,29 +40,35 @@ def Fixed(name, code, tp):
 
     def load(f):
         return unpack(f.read(size))[0]
-    return dump, load, (tp,)
+    return dump, load, tp
 Fixed = {
     _[0]: partial(indep, Fixed(*_))
     for _ in (
-        ('Int8', '>b', int),
-        ('Int16', '>h', int),
-        ('Int32', '>l', int),
-        ('Int64', '>q', int),
-        ('Uint8', '>B', int),
-        ('Uint16', '>H', int),
-        ('Uint32', '>L', int),
-        ('Uint64', '>Q', int),
-        ('Float32', '>f', float),
-        ('Float64', '>d', float))
+        ('Int8', '>b', (int, Integral)),
+        ('Int16', '>h', (int, Integral)),
+        ('Int32', '>l', (int, Integral)),
+        ('Int64', '>q', (int, Integral)),
+        ('Uint8', '>B', (int, Integral)),
+        ('Uint16', '>H', (int, Integral)),
+        ('Uint32', '>L', (int, Integral)),
+        ('Uint64', '>Q', (int, Integral)),
+        ('Float32', '>f', (float, Real)),
+        ('Float64', '>d', (float, Real)))
 }
-def mincode(length):
-    """Return the minimum struct code to hold length."""
-    nbits = length.bit_length()
-    for i, code in enumerate('BHLQ'):
-        if nbits <= 8 * (2**i):
-            return '>'+code
-    else:
-        raise ValueError('length too large: {}'.format(length))
+def bstructs(codes, pre='>'):
+    """Return list of structs of min-size by index=bitlength.
+
+    Codes should be in decreasing order of size.
+    Not very efficient for simplicity, but generally this is called
+    once and the result cached.
+    """
+    base = [struct.Struct(pre+code) for code in codes]
+    base.sort(key=(lambda x: x.size), reverse=True)
+    structs = [base[0]] * (base[0].size*8 + 1)
+    for s in base[1:]:
+        for i in range(s.size*8 + 1):
+            structs[i] = s
+    return tuple(structs)
 
 def CompactNum():
     if 1:
@@ -91,6 +97,8 @@ def CompactNum():
                     idx, packer = UDUMP[item.bit_length()]
                 else:
                     idx, packer = IDUMP[(-1 - item).bit_length()+1]
+            except AttributeError:
+                return dump(int(item), f)
             except IndexError:
                 f.write(bytestruct.pack(len(LOAD)))
                 pickle.dump(item, f)
@@ -152,7 +160,7 @@ def CompactNum():
             else:
                 s = struct.Struct(code)
                 return s.unpack(f.read(s.size))[0]
-    return dump, load, (int,)
+    return dump, load, (int, Integral)
 
 CompactNum = partial(indep, CompactNum())
 
@@ -201,6 +209,13 @@ def SimpleTuple(top, dsize, lsize):
         return tuple(lload(f))
     return ldump, load, (tuple,)
 
+def SimpleSet(top, dsize, lsize):
+    """Simple set."""
+    ldump, lload, _ = SimpleList(top, dsize, lsize)
+    def load(f):
+        return set(lload(f))
+    return ldump, load, (set,)
+
 def SimpleDict(top, dsize, lsize):
     """Simple non-recursive dict."""
     tdump = top.dump
@@ -216,6 +231,7 @@ def SimpleDict(top, dsize, lsize):
 
 # TODO implement handling for recursive list/dict
 
+BASIC = (CompactNum, Binstr, Str, Fixed['Float64'],NONE)
 
 class Serializer(object):
     """Serialize general items."""
@@ -229,10 +245,8 @@ class Serializer(object):
             f.write(self.data)
 
     def __init__(
-        self, serializers=(
-            CompactNum, Binstr, Str, Fixed['Float64'],
-            SimpleTuple, SimpleList, SimpleDict, NONE),
-        size=Fixed['Uint64']):
+        self, serializers=BASIC+(SimpleTuple, SimpleSet, SimpleList, SimpleDict),
+        size=CompactNum):
         """Initialize a Serializer.
 
         serializers: A sequence of functions with signature func(top, size)
@@ -245,14 +259,6 @@ class Serializer(object):
 
         size should be independent of the Serializer.
         """
-        if isinstance(size, int):
-            size = serialiers[size]
-        packer = struct.Struct(mincode(len(serializers)+1))
-        codesize = self.codesize = packer.size
-        typemap = self.typemap = {}
-        codemap = self.codemap = {}
-        sers = self.sers = []
-        dsize, lsize, _ = size(None, None, None)
         #closure is faster? testing
         def dump(item, f, subclassok=True):
             """Dump item to a file-like object."""
@@ -260,12 +266,16 @@ class Serializer(object):
             try:
                 func, code = typemap[tp]
             except KeyError:
-                if subclassokay:
-                    for ser in sers:
-                        tps = ser.TYPES
-                        if issubclass(tp, tps):
-                            func, code = typemap[tp] = typemap[tps[0]]
-                raise ValueError('Serialization of type {} is unknown'.format(tp))
+                if subclassok:
+                    for otp in typemap:
+                        if issubclass(tp, otp):
+                            func, code = typemap[otp]
+                            break
+                    else:
+                        raise ValueError('Serialization of type {} is unknown'.format(tp))
+                    typemap[tp] = (func, code)
+                else:
+                    raise ValueError('Serialization of type {} is unknown'.format(tp))
             f.write(code)
             func(item, f)
         def load(f):
@@ -274,9 +284,16 @@ class Serializer(object):
         self.dump = dump
         self.load = load
 
-        for i, ser in enumerate(serializers):
+        if isinstance(size, int):
+            size = serialiers[size]
+        typemap = self.typemap = {}
+        codemap = self.codemap = {}
+        dsize, lsize, _ = size(None, None, None)
+        coder = ustructs[len(serializers).bit_length()]
+        codesize = self.codesize = coder.size
+        for i, ser  in enumerate(serializers):
             dump, load, types = ser(self, dsize, lsize)
-            code = packer.pack(i+1)
+            code = coder.pack(i)
             dumper = dump, code
             for tp in types:
                 typemap.setdefault(tp, dumper)
@@ -289,12 +306,18 @@ class Serializer(object):
         try:
             func, code = self.typemap[tp]
         except KeyError:
-            if subclassokay:
-                for ser in self.serializers:
-                    tps = ser.TYPES
-                    if issubclass(tp, tps):
-                        func, code = self.typemap[tp] = self.typemap[tps[0]]
-            raise ValueError('Serialization of type {} is unknown'.format(tp))
+            if subclassok:
+                for otp in self.typemap:
+                    if issubclass(tp, otp):
+                        func, code = self.typemap[otp]
+                        break
+                else:
+                    raise ValueError('Serialization of type {} is unknown'.format(tp))
+                # threadunsafe but can never use outdated value
+                # so maybe okay?
+                self.typemap[tp] = (func, code)
+            else:
+                raise ValueError('Serialization of type {} is unknown'.format(tp))
         f.write(code)
         func(item, f)
 
@@ -336,3 +359,101 @@ class Serializer(object):
     def __getitem__(self, code):
         """Return appropriate load method from a code."""
         return self.codemap[code]
+
+
+def useq(item, q, idmap):
+    ids = [id(thing) for thing in item]
+    for p in zip(ids, item):
+        if p[0] not in idmap:
+            idmap[p[0]] = None
+            q.append(p)
+    return ids
+def rtup(mapping, obj):
+    return tuple([mapping[i] for i in obj])
+def rlist(mapping, obj):
+    return [mapping[i] for i in obj]
+def rset(mapping, obj):
+    return set([mapping[i] for i in obj])
+
+def udict(item, q, idmap):
+    ids = []
+    for k, v in item.items():
+        kid = id(k)
+        vid = id(v)
+        ids.append(kid)
+        ids.append(vid)
+        if kid not in idmap:
+            idmap[kid] = None
+            q.append((kid, k))
+        if vid not in idmap:
+            idmap[vid] = None
+            q.append((vid, v))
+    return ids
+
+def rdict(item, mapping, obj):
+    objs = [mapping[i] for i in obj]
+    it = iter(objs)
+    item.update(zip(it, it))
+
+
+class RSerializer(Serializer):
+    """Serialize recursive structures."""
+    def __init__(
+        self,
+        mutables=((useq, rlist, (list,)), (useq, rset, (set,))),
+        immutables=((useq, rtup, (tuple,)),),
+        serializers=BASIC,
+        size=CompactNum
+    ):
+        """Initialize Rserializer.
+
+        mutables: a 3-tuple:
+            1. func(item, q, idmap):
+                1. populate the q with new objects (not in idmap)
+                2. return list of ids
+            2. func(mapping, obj):
+                regenerate the object.
+                mapping is {id: obj}
+            3. types
+        immutables: a 3-tuple:
+            1. func(item, q, idmap):
+                1. populate the q with new objects (not in idmap)
+                2. return list of ids
+            2. func(item, mapping, obj):
+                update item from obj and mapping.
+            3. types
+        serializers:
+            Same as Serializer.  These should be non-recursible.
+            (Passing None as top should not error)
+        """
+        super(RSerializer, self).__init__(serializers)
+        superdump = self.dump
+        superload = self.load
+
+        coder = struct.Struct(
+            mincode(len(mutables)+len(immutables)))
+        self.ufuncs = {}
+        self.rfuncs = {}
+        for cls in self.typemap:
+            self.ufuncs[cls] = None
+
+        for i, (ufunc, rfunc, clss) in enumerate(mutables):
+            if set(clss).intersection(self.rollers):
+                raise Exception('basic types and mutables overlap')
+            code = coder.pack(i)
+            r = code, ufunc
+            for tp in clss:
+                self.rollers[tp] = code, ufunc
+            self.unrollers
+
+
+
+
+# TODO
+# generate a function to serialize a particular data structure
+# argument = some object
+# 1. find attributes and look for matches
+# 2. generate code to serialize/deserialize that particular object
+# 3. use this to serialize/deserialize that type (use the funcs
+#   as part of a serializer?
+#   things should be a type or None to indicate any

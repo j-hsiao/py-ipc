@@ -3,6 +3,8 @@ import pickle
 import time
 import io
 
+import numpy as np
+
 from jhsiao.ipc import sserial as ss
 from jhsiao.tests.profile import simpletest, simpleparser
 from jhsiao.scope import Scope
@@ -48,6 +50,12 @@ if __name__ == '__main__':
     print(repr(data))
     assert s.loads(data) == thing
     assert s.loads(s.dumps(s.Pre(data))) == thing
+
+    altnum = np.uint32(42)
+    altrestore = s.loads(s.dumps(altnum))
+    assert altrestore == 42
+    assert isinstance(altrestore, int)
+    assert isinstance(altnum, np.uint32)
 
     pf = io.BytesIO()
     sf = io.BytesIO()
