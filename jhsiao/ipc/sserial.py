@@ -18,6 +18,101 @@ from functools import partial
 from collections import deque
 from numbers import Integral, Real
 
+def bstructs(codes, pre='>'):
+    """Return 2 lists of struct.Structs info.
+
+    The first list has the appropriate struct.Struct and corresponding
+    index into the second list for the same struct for loading.
+
+    result = lst1[num.bit_length()][0].pack(num)
+    lst2[lst1[num.bit_length()][1]].unpack(result)[0] == num
+    """
+    base = [struct.Struct(pre+code) for code in codes]
+    base.sort(key=(lambda x: x.size), reverse=True)
+    structs = [(base[0], 0)] * (base[0].size*8 + 1)
+    for lidx, s in enumerate(base[1:]):
+        tup = (s, lidx+1)
+        for i in range(s.size*8 + 1):
+            structs[i] = tup
+    return tuple(structs), tuple(base)
+
+upstructs, ulstructs = bstructs('BHLQ', '>')
+ipstructs, ilstructs = bstructs('bhlq', '>')
+
+class BaseSerializer(object):
+    """Base class for serializing a single type."""
+    def __init__(self, top):
+        """Initialize a type serializer.
+
+        top: should be a general-item serializer.
+            It will be used if the current type can
+            possible contain a generic item.
+        """
+        pass
+
+    def dump(self, item, f):
+        """Dump the item directly into the file-like object.
+
+        May be replaced with a closure for performance.
+        Do not use the unbound versions.
+        """
+        raise NotImplementedError
+    def load(self, f):
+        """Load an item from file-like object.
+
+        May be replaced with a closure for performance.
+        Do not use the unbound versions.
+        """
+        raise NotImplementedError
+
+    def info(self):
+        """Return a tuple of struct code string and bool.
+
+        The codestring is for fixed-size portion of the serialization.
+        The bool is True if the data is variable-sized else False.
+        """
+        raise NotImplementedError
+
+class _FixedPrimitive(BaseSerializer):
+    """Fixed size primitive (ints, floats)."""
+    @staticmethod
+    def _make_closures(packer):
+        pack = packer.pack
+        unpack = packer.unpack
+        size = packer.size
+        @staticmethod
+        def dump(item, f):
+            f.write(pack(item))
+        @staticmethod
+        def load(f):
+            return unpack(f.read(size))[0]
+        @staticmethod
+        def info():
+            return packer.format, False
+        return dump, load, info
+
+class Uint8(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(upstructs[8])
+class Uint16(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(upstructs[16])
+class Uint32(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(upstructs[32])
+class Uint64(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(upstructs[64])
+class Int8(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(ipstructs[8])
+class Int16(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(ipstructs[16])
+class Int32(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(ipstructs[32])
+class Int64(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(ipstructs[64])
+class Float32(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(struct.Struct('>f'))
+class Float64(_FixedPrimitive):
+    dump, load, info = _FixedPrimitive._make_closures(struct.Struct('>d'))
+
+
 def NONE(top, dsize, lsize):
     def dump(item, f):
         pass
@@ -55,20 +150,6 @@ Fixed = {
         ('Float32', '>f', (float, Real)),
         ('Float64', '>d', (float, Real)))
 }
-def bstructs(codes, pre='>'):
-    """Return list of structs of min-size by index=bitlength.
-
-    Codes should be in decreasing order of size.
-    Not very efficient for simplicity, but generally this is called
-    once and the result cached.
-    """
-    base = [struct.Struct(pre+code) for code in codes]
-    base.sort(key=(lambda x: x.size), reverse=True)
-    structs = [base[0]] * (base[0].size*8 + 1)
-    for s in base[1:]:
-        for i in range(s.size*8 + 1):
-            structs[i] = s
-    return tuple(structs)
 
 def CompactNum():
     if 1:

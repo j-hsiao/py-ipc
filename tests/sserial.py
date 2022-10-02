@@ -1,7 +1,9 @@
+from __future__ import print_function
 import ast
 import pickle
 import time
 import io
+import sys
 
 import numpy as np
 
@@ -38,7 +40,57 @@ with Scope('s') as s:
 
     ltests = dict(s.items())
 
-if __name__ == '__main__':
+def main():
+    print('testing bstructs: ', end='')
+    for i in (0, 1, 255, 256, 65535, 65536, (1<<32)-1, 1<<32, (1<<64)-1):
+        packer, idx = ss.upstructs[i.bit_length()]
+        data = packer.pack(i)
+        assert ss.ulstructs[idx].unpack(data)[0] == i
+    for i in (
+            -128, -129, -32768, -32769,
+            -(1<<31), -(1<<31)-1,
+            -(1<<63), -(1<<63)-1):
+        try:
+            packer, idx = ss.ipstructs[(-1 - i).bit_length()+1]
+        except IndexError:
+            if ((-1-i).bit_length()+1) <= 64:
+                print("fail to pack i.")
+                return 1
+            continue
+        data = packer.pack(i)
+        assert ss.ilstructs[idx].unpack(data)[0] == i
+    print('pass')
+
+    print('testing fixed ints...')
+    with io.BytesIO() as f:
+        for tp, testvals, failvals in (
+                (ss.Uint8, (0, 255), (256,)),
+                (ss.Uint16, (0, 255, 256, 65535), (65536,)),
+                (ss.Uint32, (0, 255, 256, 65535, 1<<16, (1<<32)-1), (1<<32,)),
+                (ss.Uint64, (0, 255, 256, 65535, 1<<16, (1<<32)-1, (1<<64)-1), (1<<64,)),
+                (ss.Int8, (0, 1, 127, -128), (128, -129)),
+                (ss.Int16, (-(1<<15), (1<<15) - 1), (-(1<<15)-1, 1<<15)),
+                (ss.Int32, (-(1<<31), (1<<31)-1), (-(1<<31)-1, 1<<31)),
+                (ss.Int64, (-(1<<63), (1<<63)-1), (-(1<<63)-1, 1<<63))
+            ):
+            print('\ttesting', tp.__name__, end=': ')
+            for x in testvals:
+                f.seek(0)
+                tp.dump(x, f)
+                f.seek(0)
+                assert tp.load(f) == x
+            for x in failvals:
+                try:
+                    tp.dump(x, f)
+                except Exception:
+                    pass
+                else:
+                    print('expected fail on value', x)
+                    return 1
+            print('pass')
+    return
+
+
     import argparse
     p = argparse.ArgumentParser(parents=[simpleparser])
     p.add_argument('item', help='thing to dump/load', default='"hello"', nargs='?')
@@ -63,3 +115,6 @@ if __name__ == '__main__':
 
     simpletest(dtests, args, (thing, pf, sf, af, s.dump), checkmatch=None)
     simpletest(ltests, args, (pf, sf, af, s.load))
+
+if __name__ == '__main__':
+    sys.exit(main())
