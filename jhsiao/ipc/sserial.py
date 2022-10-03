@@ -41,6 +41,7 @@ ipstructs, ilstructs = bstructs('bhlq', '>')
 
 class BaseSerializer(object):
     """Base class for serializing a single type."""
+    TYPES=()
     def __init__(self, top):
         """Initialize a type serializer.
 
@@ -73,6 +74,22 @@ class BaseSerializer(object):
         """
         raise NotImplementedError
 
+    def compile(self, name):
+        """Return 3-tuple for generating a function.
+
+        name: the name of the variable to use in the code.
+
+        For the return value, the 1st item should be a list of str
+        expressions such that '[' + ','.join(compile(name))[0] + ']'
+        will create a valid list.
+        The second item should be a list of code-lines code to add any
+        variable data to a list named 'data'.  The items added should be
+        binary (bytes, memoryview, etc).  The last one is any variables
+        required for the code/expressions.
+        """
+        raise NotImplemented
+
+
 class _FixedPrimitive(BaseSerializer):
     """Fixed size primitive (ints, floats)."""
     @staticmethod
@@ -91,26 +108,49 @@ class _FixedPrimitive(BaseSerializer):
             return packer.format, False
         return dump, load, info
 
+    def compile(self, name):
+        return (name,), [], {}
+
 class Uint8(_FixedPrimitive):
+    TYPES=(int, numbers.Integral)
     dump, load, info = _FixedPrimitive._make_closures(upstructs[8])
 class Uint16(_FixedPrimitive):
+    TYPES=(int, numbers.Integral)
     dump, load, info = _FixedPrimitive._make_closures(upstructs[16])
 class Uint32(_FixedPrimitive):
+    TYPES=(int, numbers.Integral)
     dump, load, info = _FixedPrimitive._make_closures(upstructs[32])
 class Uint64(_FixedPrimitive):
+    TYPES=(int, numbers.Integral)
     dump, load, info = _FixedPrimitive._make_closures(upstructs[64])
 class Int8(_FixedPrimitive):
+    TYPES=(int, numbers.Integral)
     dump, load, info = _FixedPrimitive._make_closures(ipstructs[8])
 class Int16(_FixedPrimitive):
+    TYPES=(int, numbers.Integral)
     dump, load, info = _FixedPrimitive._make_closures(ipstructs[16])
 class Int32(_FixedPrimitive):
+    TYPES=(int, numbers.Integral)
     dump, load, info = _FixedPrimitive._make_closures(ipstructs[32])
 class Int64(_FixedPrimitive):
+    TYPES=(int, numbers.Integral)
     dump, load, info = _FixedPrimitive._make_closures(ipstructs[64])
 class Float32(_FixedPrimitive):
+    TYPES=(float, numbers.Real)
     dump, load, info = _FixedPrimitive._make_closures(struct.Struct('>f'))
 class Float64(_FixedPrimitive):
+    TYPES=(float, numbers.Real)
     dump, load, info = _FixedPrimitive._make_closures(struct.Struct('>d'))
+
+class PStruct(BaseSerializer):
+    """Represents a sequence of data to be serialized via struct.Struct.
+
+    Subclasses should have a class attribute FORMAT.
+    """
+    def __init__(self, top):
+        self.TYPES = (type(self),)
+
+
 
 
 def NONE(top, dsize, lsize):
