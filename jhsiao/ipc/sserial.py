@@ -51,6 +51,7 @@ class BaseSerializer(object):
         """
         pass
 
+    # dump/load interface
     def dump(self, item, f):
         """Dump the item directly into the file-like object.
 
@@ -66,29 +67,29 @@ class BaseSerializer(object):
         """
         raise NotImplementedError
 
-    def info(self):
-        """Return a tuple of struct code string and bool.
-
-        The codestring is for fixed-size portion of the serialization.
-        The bool is True if the data is variable-sized else False.
-        """
-        raise NotImplementedError
-
+    # code-generation interface
     def compile(self, name):
-        """Return 3-tuple for generating a function.
+        """Return a dict of values.
 
-        name: the name of the variable to use in the code.
+        name: the name of the variable to use in code.
 
-        For the return value, the 1st item should be a list of str
-        expressions such that '[' + ','.join(compile(name))[0] + ']'
-        will create a valid list.
-        The second item should be a list of code-lines code to add any
-        variable data to a list named 'data'.  The items added should be
-        binary (bytes, memoryview, etc).  The last one is any variables
-        required for the code/expressions.
+        The dict can contain:
+            format: format-string in struct format.  (This should not
+                contain any byte-order indicators since struct does not
+                allow changing byte-order mid-format).
+                If s = struct.Struct(format).size, then 
+                len(s.unpack(bytearray(s.size))) should be the number of
+                fixed-size values for serialization of this item.
+            fixed: A list/tuple of expressions to be passed to
+                struct.pack.  Alternatively, a string expression
+                representing a sequence of items.  The number of items
+                should correspond to format.
+            prep: 
+            data: This should be a sequence of bytes/binary
+                expressions representing variable data, if any.
+            local: This should be a dict of any required local variables.
         """
         raise NotImplemented
-
 
 class _FixedPrimitive(BaseSerializer):
     """Fixed size primitive (ints, floats)."""
@@ -97,15 +98,24 @@ class _FixedPrimitive(BaseSerializer):
         pack = packer.pack
         unpack = packer.unpack
         size = packer.size
+
         @staticmethod
         def dump(item, f):
             f.write(pack(item))
+
         @staticmethod
         def load(f):
             return unpack(f.read(size))[0]
+
         @staticmethod
-        def info():
-            return packer.format, False
+        def compile(name):
+            fmt = packer.format[1:]
+            return dict(
+                format=fmt,
+                fixed=[name],
+                local={'packer{}'.format(fmt): packer},
+            return packer.format[1:], False
+
         return dump, load, info
 
     def compile(self, name):
