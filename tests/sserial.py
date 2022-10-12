@@ -42,23 +42,31 @@ with Scope('s') as s:
 
 def main():
     print('testing bstructs: ', end='')
+    upstructs, ulstructs = ss.bstructs('BHLQ', '>', False)
+    mupstructs, mulstructs = ss.bstructs('BHLQ', '>', True)
     for i in (0, 1, 255, 256, 65535, 65536, (1<<32)-1, 1<<32, (1<<64)-1):
-        packer, idx = ss.upstructs[i.bit_length()]
+        packer, idx = upstructs[i.bit_length()]
         data = packer.pack(i)
-        assert ss.ulstructs[idx].unpack(data)[0] == i
+        assert ulstructs[idx].unpack(data)[0] == i
+        packer, idx = mupstructs[i.bit_length()]
+        data = packer.pack(idx, i)
+        assert upstructs[0][0].unpack(data[:1])[0] == idx
+        assert mulstructs[idx].unpack(data[1:])[0] == i
+
+    ipstructs, ilstructs = ss.bstructs('bhlq', '>', False)
     for i in (
             -128, -129, -32768, -32769,
             -(1<<31), -(1<<31)-1,
             -(1<<63), -(1<<63)-1):
         try:
-            packer, idx = ss.ipstructs[(-1 - i).bit_length()+1]
+            packer, idx = ipstructs[(-1 - i).bit_length()+1]
         except IndexError:
             if ((-1-i).bit_length()+1) <= 64:
                 print("fail to pack i.")
                 return 1
             continue
         data = packer.pack(i)
-        assert ss.ilstructs[idx].unpack(data)[0] == i
+        assert ilstructs[idx].unpack(data)[0] == i
     print('pass')
 
     print('testing fixed ints...')
