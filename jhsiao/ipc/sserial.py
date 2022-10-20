@@ -124,11 +124,22 @@ class BaseSerializer(object):
                 struct.pack.  Alternatively, a string expression
                 representing a sequence of items.  The number of items
                 should correspond to format.
+        optional keys:
+            unpack: bool, True if the values should be unpacked
+
             prep: 
             data: This should be a sequence of bytes/binary
                 expressions representing variable data, if any.
             local: This should be a dict of any required local variables.
         """
+        # NOTES: did some profiling about unpacking/separating values.
+        # 1. If unpacking to separate variables is required, then a
+        #   single struct.unpack followed by tuple unpack is fastest
+        #   even up to 2000 vars.
+        # 2. If the chunk is needed as-is, then a separate unpack() call
+        #   has the best performance
+        # 3. even for single value, unpacking is faster than indexing
+        #   (tested on python 3.9.1)
         raise NotImplementedError
 
 class NONE(BaseSerializer):
