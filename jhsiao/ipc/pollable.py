@@ -1,16 +1,16 @@
 class BasePollable(object):
     """A pollable object.
 
-    The use case is to allow event-like interrupts while
-    poll/select on sockets or stuff.
-    This is implemented by making the returned fileno() readable or not
-    by writing/reading a single byte per set/clear.
-    There is no locking so might not be threadsafe.  It should
-    generally be safe to call set from 1 thread and clear from another
-    though.
+    No locks so might not be threadsafe.  Best to call methods
+    while some lock is acquired.
     """
-    def __init__(self):
-        self.r = self.w = None
+    def __init__(self, r, w):
+        self.r = r
+        self.w = w
+        self.on = False
+
+    def __bool__(self):
+        return self.on
 
     def fileno(self):
         """Base class for polling."""
@@ -26,12 +26,16 @@ class BasePollable(object):
 
     def set(self):
         """Push a byte."""
-        self.w.write(b'0')
-        self.w.flush()
+        if not self.on:
+            self.on = True
+            self.w.write(b'0')
+            self.w.flush()
 
     def clear(self):
         """Pop a byte, may hang if no bytes pushed."""
-        self.r.read(1)
+        if self.on:
+            self.r.read(1)
+            self.on = False
 
     def __del__(self):
         self.close()
@@ -43,48 +47,48 @@ if platform.system() == 'Windows':
     from . import sockets
     class Pollable(BasePollable):
         def __init__(self):
-            super(Pollable, self).__init__()
             l = sockets.bind(('127.0.0.1', 0))
             try:
                 l.listen(1)
-                self.w = sockets.Sockfile(sockets.connect(('127.0.0.1', l.getsockname()[1])), 'wb')
+                w = sockets.Sockfile(sockets.connect(('127.0.0.1', l.getsockname()[1])), 'wb')
                 r, a = l.accept()
-                self.r = sockets.Sockfile(r, 'rb')
+                r = sockets.Sockfile(r, 'rb')
             finally:
                 l.close()
+            super(Pollable, self).__init__(r, w)
 
 else:
     import os
     class Pollable(BasePollable):
         def __init__(self):
-            super(Pollable, self).__init__()
             r, w = os.pipe()
-            self.r = os.fdopen(r, 'rb')
-            self.w = os.fdopen(w, 'wb')
+            r = os.fdopen(r, 'rb')
+            w = os.fdopen(w, 'wb')
+            super(Pollable, self).__init__(r, w)
 
 
-class PollableEvent(pollable.Pollable):
+class PollableEvent(Pollable):
+    """Takes a lock for use internally."""
     def __init__(self, lock):
         super(PollableEvent, self).__init__()
         self.lock = lock
-        self.on = False
 
     def __bool__(self):
         """Threadsafe. If lock is already grabbed, just check self.on."""
         with self.lock:
             return self.on
 
+    def close(self):
+        with self.lock:
+            super(PollableEvent, self).close()
+
     def set(self):
         with self.lock:
-            if not self.on:
-                super(PollableEvent, self).set()
-                self.on = True
+            super(PollableEvent, self).set()
 
     def clear(self):
         with self.lock:
-            if self.on:
-                super(PollableEvent, self).clear()
-                self.on = False
+            super(PollableEvent, self).clear()
 
 
 if __name__ == '__main__':

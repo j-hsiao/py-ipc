@@ -196,7 +196,7 @@ if hasattr(select, 'select'):
             return iter(ret.values())
 
         def poll(self, timeout=None, events=False):
-            if timeout < 0:
+            if timeout is not None and timeout < 0:
                 timeout = None
             dcts = (self.r, self.w, self.x)
             r, w, x = dcts
