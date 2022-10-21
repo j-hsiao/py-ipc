@@ -62,6 +62,31 @@ else:
             self.r = os.fdopen(r, 'rb')
             self.w = os.fdopen(w, 'wb')
 
+
+class PollableEvent(pollable.Pollable):
+    def __init__(self, lock):
+        super(PollableEvent, self).__init__()
+        self.lock = lock
+        self.on = False
+
+    def __bool__(self):
+        """Threadsafe. If lock is already grabbed, just check self.on."""
+        with self.lock:
+            return self.on
+
+    def set(self):
+        with self.lock:
+            if not self.on:
+                super(PollableEvent, self).set()
+                self.on = True
+
+    def clear(self):
+        with self.lock:
+            if self.on:
+                super(PollableEvent, self).clear()
+                self.on = False
+
+
 if __name__ == '__main__':
     import select
     p = Pollable()

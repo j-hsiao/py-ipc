@@ -247,6 +247,20 @@ class Sockfile(io.RawIOBase):
             self._wpos = 0
         self._shut = getattr(socket, 'SHUT_{}'.format(FLAGS))
         self.fileno = sock.fileno
+        self._name = None
+
+    @property
+    def name(self):
+        """Some identifier, str if unix, tup if inet."""
+        if self._name is None:
+            try:
+                self._name = self.socket.getpeername()
+            except Exception:
+                try:
+                    self._name = '"bad socket fd{}"'.format(self.fileno())
+                except Exception:
+                    self._name = '"bad socket"'
+        return self._name
 
     def shutdown(self, method=None):
         """Shutdown the the wrapped socket.
