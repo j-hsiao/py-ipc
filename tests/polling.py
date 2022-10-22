@@ -2,11 +2,84 @@ from __future__ import print_function
 from jhsiao.ipc.polling import Poller
 import socket
 import sys
+import time
 
-if __name__ == '__main__':
-    import platform
+def test_oneshot():
+    l = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    l.bind(('localhost', 0))
+    l.listen(1)
+    L = 0.1
+    S = L/2
+
     p = Poller()
+    p.register(l, p.RFLAGS)
+    # no data should block
+    now = time.time()
+    assert not any(p.poll(L))
+    assert time.time()-now > S
+    c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    c.connect(('localhost', l.getsockname()[1]))
+    #has data should return immediately
+    now = time.time()
+    assert p.poll(L)[0]
+    assert time.time()-now < S
+    #level triggered no oneshot should return immediately again
+    now = time.time()
+    assert p.poll(L)[0]
+    assert time.time()-now < S
+    s, a = l.accept()
+    s.close()
+    c.close()
 
+    # testing oneshot
+    p.modify(l, p.RFLAGS|p.OFLAGS)
+    # no data, should block
+    now = time.time()
+    assert not any(p.poll(L))
+    assert time.time()-now > S
+    # oneshot but no event means should block again
+    now = time.time()
+    assert not any(p.poll(L))
+    assert time.time()-now > S
+    c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    c.connect(('localhost', l.getsockname()[1]))
+    #make sure active flags set not empty
+    p.register(c, p.RFLAGS)
+    #has data should return immediately once
+    now = time.time()
+    assert p.poll(L)[0]
+    assert time.time()-now < S
+    now = time.time()
+    assert not any(p.poll(L))
+    assert time.time()-now > S
+    # modify to rearm the fd
+    p.modify(l, p.RFLAGS|p.OFLAGS)
+    now = time.time()
+    assert p.poll(L)[0]
+    assert time.time()-now < S
+    now = time.time()
+    assert not any(p.poll(L))
+    assert time.time()-now > S
+    # modify to remove oneshot
+    p.modify(l, p.RFLAGS)
+    now = time.time()
+    assert p.poll(L)[0]
+    assert time.time()-now < S
+    now = time.time()
+    assert p.poll(L)[0]
+    assert time.time()-now < S
+    s, a = l.accept()
+    p.unregister(c)
+    p.unregister(l)
+    s.close()
+    c.close()
+    l.close()
+    p.close()
+    print('pass')
+
+
+def test_poller():
+    p = Poller()
     import socket
     l = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     l.bind(('', 0))
@@ -62,3 +135,7 @@ if __name__ == '__main__':
         s.close()
 
     print('pass')
+
+if __name__ == '__main__':
+    from jhsiao.tests import simple
+    simple(globals())

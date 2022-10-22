@@ -1,3 +1,5 @@
+__all__ = ['Pollable', 'PollableEvent']
+# TODO look into eventfd
 class BasePollable(object):
     """A pollable object.
 
@@ -89,20 +91,3 @@ class PollableEvent(Pollable):
     def clear(self):
         with self.lock:
             super(PollableEvent, self).clear()
-
-
-if __name__ == '__main__':
-    import select
-    p = Pollable()
-    print('should block')
-    print(select.select((p,), (), (), 1))
-    print('ok')
-    p.set()
-    print('immediate')
-    print(select.select((p,), (), (), 1))
-    print('ok')
-    p.clear()
-    print('should block')
-    print(select.select((p,), (), (), 1))
-    print('ok')
-    p.close()
