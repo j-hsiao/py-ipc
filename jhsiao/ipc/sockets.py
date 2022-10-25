@@ -15,7 +15,7 @@ binding:
 from __future__ import print_function
 __all__ = [
     'get_ip', 'Sockfile', 'Listener',
-    'bind_inet', 'connect_inet',
+    'bind_inet', 'connect_inet', 'connect_proxy',
     'bind', 'connect'
 ]
 
@@ -449,15 +449,73 @@ def bind_inet(
                 errors.append(e)
     raise MultiError(errors)
 
+class ProxyWrap(Sockfile):
+    """Always read at most 1 byte to avoid consuming extra data.
+
+    The main purpose is to just find the end of the proxy response.
+    even if less efficient, this should only be used once per
+    connection so it's fine if it isn't efficient.
+    """
+    def read(self, amt=None):
+        return super(ProxyWrap, self).read(1)
+    def readinto(self, buf):
+        return super(ProxyWrap, self).readinto(memoryview(buf)[:1])
+
+def connect_proxy(proxy, host, port, *args):
+    """simple use of proxy to connect to host/port."""
+    if not isinstance(proxy, str):
+        proxy = os.environ.get('https_proxy', os.environ.get('http_proxy'))
+    pproto, addr = proxy.split('://', 1)
+    phost, pport = addr.rsplit(':', 1)
+    sock = connect_inet(phost, int(pport), *args)
+    ok = False
+    try:
+        if pproto == 'http':
+            # need to ensure that no extra data is read...
+            # so only read absolute minimum to find end of headers
+            sock.sendall(
+                'CONNECT {}:{} HTTP/1.1\r\n\r\n'.format(
+                    host, port).encode('utf-8'))
+            f = ProxyWrap(sock, 'rb')
+            try:
+                line = f.readline().decode('utf-8')
+                version, code, reason = line.split(None, 2)
+                if int(code) != 200:
+                    raise Exception(reason)
+                else:
+                    for line in f:
+                        if not (line and line.endswith(b'\r\n')):
+                            break
+                        elif line == b'\r\n':
+                            ok = True
+                            return sock
+            finally:
+                f.detach()
+        elif pproto == 'https':
+            # not implemented for now
+            # would probably wrap in ssl or something
+            pass
+        raise NotImplementedError
+    finally:
+        if not ok:
+            sock.close()
+
+
 def connect_inet(
     hostOrAddr, port=None, family=0, tp=0, proto=0, flags=0,
-    cloexec=True, nodelay=False, timeout=None):
+    cloexec=True, nodelay=False, timeout=None, proxy=True):
     """Return socket connected to (host, port).
 
-    hostOrAddr: tuple of (host,port) (like from getsockname()) or just host.
-        port: port to bind to if hostOrAddr is just host.
+    hostOrAddr: tuple of (host,port) (like from getsockname()) or just
+        host.
+    port: port to bind to if hostOrAddr is just host.
     Falsey host is shorthand for ipv4 localhost '127.0.0.1'.
+    proxy: use proxy? if str, then use that as proxy specification
+        otherwise, if Truthy, search environment for
+        http_proxy/https_proxy.
+        If proxy fails, try to connect directly.
     """
+
     if isinstance(hostOrAddr, tuple):
         # ipv6 gives a 4-tuple, only need the first 2
         host, port = hostOrAddr[:2]
@@ -465,6 +523,13 @@ def connect_inet(
         host = hostOrAddr
     if not host:
         host = '127.0.0.1'
+    if proxy and host not in ('localhost', '127.0.0.1', '::'):
+        try:
+            return connect_proxy(
+                proxy, host, port, family, tp, proto, flags,
+                cloexec, nodelay, timeout, False)
+        except Exception:
+            pass
     addrs = socket.getaddrinfo(host, port, family, tp, proto, flags)
     errors = []
     cloexecflag = SOCK_CLOEXEC if cloexec else 0
