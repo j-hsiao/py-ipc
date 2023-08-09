@@ -1,7 +1,12 @@
-"""Read lines. (delimited by '\n')"""
+"""Read lines (size followed by bytes)."""
 __all__ = ['LineReader']
-from socketfile import bufferedreader
+import struct
+import codecs
 import sys
+
+codes = ['>BB', '>BH', '>BL', '>BQ']
+
+from socketfile import bufferedreader
 
 class LineReader(bufferedreader.BufferedReader):
     """Read bytes lines."""
@@ -17,10 +22,6 @@ class LineReader(bufferedreader.BufferedReader):
         """
 
         super(LineReader, self).__init__(f)
-        if sys.version_info.major > 2:
-            pass
-        else:
-            pass
         if 's' in mode:
             if sys.version_info.major > 2:
                 self.extract = self._extract_text
@@ -37,7 +38,7 @@ class LineReader(bufferedreader.BufferedReader):
     def _extract_binary(self, out, newstart):
         nl = self.buf.find(b'\n', newstart, self.stop)
         start = 0
-        while nl >= 0:
+        while 0 <= nl  < self.stop:
             out.append(self.view[start:].tobytes())
             start = nl+1
             nl = self.buf.find(b'\n', start, self.stop)

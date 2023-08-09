@@ -1,25 +1,13 @@
 """Use a socket as a io.RawIOBase."""
 __all__ = ['Sockfile']
-import functools
 import io
 import socket
-import sys
-import platform
-
-try:
-    import errno
-except ImportError:
-    EAGAIN = 11
-    EWOULDBLOCK = 10035 if platform.system() == 'Windows' else 11
-else:
-    EAGAIN = getattr(errno, 'EAGAIN', 11)
-    EWOULDBLOCK = getattr(
-        errno,
-        'EWOULDBLOCK',
-        10035 if platform.system() == 'Windows' else 11)
 
 class Sockfile(io.RawIOBase):
     """Wrap a socket in a file-like object.
+
+    NOTE: non-blocking mode is not supported.  If you do not want to
+    block, then use polling/select.
 
     shutdown observations:
         SHUT_RD: this side will return b'' whenever calling receive and
@@ -32,6 +20,9 @@ class Sockfile(io.RawIOBase):
         If SHUT_RD and SHUT_WR, connection seems to be auto-broken.  ie
         if SHUT_RD, receive data until SHUT_WR, after which connection
         is broken. (Though fd still exists.)
+
+    Class methods should work, but may be overwritten for each instance
+    for slightly better performance.
     """
     SHUT_RD = socket.SHUT_RD
     SHUT_WR = socket.SHUT_WR
@@ -41,44 +32,49 @@ class Sockfile(io.RawIOBase):
 
         sock: socket to wrap
         mode: mode, determines whether read() or write() are available.
-            Also determines the default for self.shutdown()
+            Also determines the default for self.shutdown(). b is ignored.
+            Sockfile is always binary.
         """
         super(Sockfile, self).__init__()
         self.socket = sock
-        if 'b' not in mode:
-            print(
-                'WARNING: Sockfile only handles binary io but b not present in mode',
-                file=sys.stderr)
         self._w = bool(set('wa+').intersection(mode))
         self._r = bool(set('r+').intersection(mode))
         if not (self._w or self._r):
-            raise Exception("Sockfile neither read nor write")
+            raise ValueError('Mode must be at least read or write.')
         FLAGS = ''
         if self._r:
             FLAGS ='RD'
-            self._read = self._block_to_none(sock.recv)
-            self._readinto = self._block_to_none(sock.recv_into)
-            self._rpos = 0
+            self.readinto = sock.recv_into
         if self._w:
             FLAGS += 'WR'
-            self._write = self._block_to_none(sock.send)
-            self._wpos = 0
+            self.write = sock.send
         self._shut = getattr(socket, 'SHUT_{}'.format(FLAGS))
         self.fileno = sock.fileno
         self._name = None
 
-    @property
-    def name(self):
-        """Some identifier, str if unix, tup if inet."""
-        if self._name is None:
+    def __getattr__(self, attr):
+        try:
+            creator = object.__getattribute__(self, '_' + attr)
+        except AttributeError:
+            raise AttributeError(attr)
+        else:
             try:
-                self._name = self.socket.getpeername()
+                result = creator()
             except Exception:
-                try:
-                    self._name = '"bad socket fd{}"'.format(self.fileno())
-                except Exception:
-                    self._name = '"bad socket"'
-        return self._name
+                raise AttributeError(attr)
+            else:
+                setattr(self, attr, result)
+                return result
+
+    def _name(self):
+        """Return peer name."""
+        try:
+            return self.socket.getpeername()
+        except Exception:
+            try:
+                return '"bad socket fd{}"'.format(self.fileno())
+            except Exception:
+                return '"bad socket id{}"'.format(id(self))
 
     def shutdown(self, method=None):
         """Shutdown the the wrapped socket.
@@ -98,14 +94,18 @@ class Sockfile(io.RawIOBase):
     def detach(self):
         """Detach from the wrapped socket.
 
-        Set closed state and return the wrapped socket. Note however
-        that some internal references may still point to the socket
-        so calling any functions after detaching is undefined.
+        Set closed state and return the wrapped socket.
         """
-        io.RawIOBase.close(self)
-        ret = self.socket
-        self.socket = None
-        return ret
+        if self.socket is not None:
+            io.RawIOBase.close(self)
+            ret = self.socket
+            self.socket = None
+            if self._w:
+                del self.write
+            if self._r:
+                del self.readinto
+            del self.fileno
+            return ret
 
     #IOBase
     def close(self):
@@ -113,78 +113,36 @@ class Sockfile(io.RawIOBase):
         if self.socket is not None:
             self.shutdown(socket.SHUT_RDWR)
             self.detach().close()
-    # fileno = socket.fileno()
+    def fileno(self):
+        return self.socket.fileno()
     def flush(self):
         pass
     def isatty(self):
         return False
     def readable(self):
         return self._r
-    # readline and readlines are free by defining read()
+    # readline and readlines are free by defining readinto()
 
     def seekable(self):
         return False
     def seek(self, *args):
         raise io.UnsupportedOperation("sockfile cannot seek")
     def tell(self):
-        """Return position.
-
-        If readable, return number of bytes read from initialization.
-        Otherwise, return number of bytes written from initizliation.
-        """
-        if self._r:
-            return self._rpos
-        return self._wpos
-    def rtell(self):
-        """Total number of bytes read so far."""
-        return self._rpos
-    def wtell(self):
-        """Total bytes written so far."""
-        return self._wpos
+        raise io.UnsupportedOperation("Position not tracked.")
     def truncate(self):
         raise io.UnsupportedOperation("sockfile cannot seek")
 
-    # writelines
+    # writelines free by defining write()
     def writable(self):
         return self._w
 
-    @staticmethod
-    def _block_to_none(func):
-        """Convert socket timeout and EAGAIN, EWOULDBLOCK to None."""
-        @functools.wraps(func)
-        def wrap(arg):
-            try:
-                return func(arg)
-            except socket.timeout:
-                return None
-            except EnvironmentError as e:
-                if e.errno in (EAGAIN, EWOULDBLOCK):
-                    return None
-                raise
-        return wrap
     # RawIOBase
-    def _read(self, amt=-1):
-        raise io.UnsupportedOperation('read')
 
-    def read(self, amt=-1):
-        if amt is None or amt < 0:
-            ret = self.readall()
-        else:
-            ret = self._read(amt)
-        if ret:
-            self._rpos += len(ret)
-        return ret
-
+    # read, readall is free by defining readinto
     def readinto(self, buf):
-        amt = self._readinto(buf)
-        if amt:
-            self._rpos += amt
-        return amt
+        """Read data into buf, max 1 syscall."""
+        return self.socket.recv_into(buf)
 
-    def _write(self, data):
-        raise io.UnsupportedOperation('write')
     def write(self, data):
-        ret = self._write(data)
-        if ret:
-            self._wpos += ret
-        return ret
+        """Write some data.  Return amount written."""
+        return self.socket.send(data)

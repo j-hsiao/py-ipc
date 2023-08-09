@@ -87,5 +87,16 @@ if __name__ == '__main__':
                         count += 1
                         f.write(str(count))
                         f.write('\n')
+                elif args.count:
+                    for i in range(args.count):
+                        writer.write(str(count) + '\n')
+                else:
+                    if sys.version_info.major > 2:
+                        inp = input
+                    else:
+                        inp = raw_input
+                    while 1:
+                        writer.write(inp('>>> '))
+                        writer.flush()
         finally:
             sock.close()

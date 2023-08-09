@@ -91,7 +91,11 @@ class _ProxyWrap(sockfile.Sockfile):
         return super(_ProxyWrap, self).readinto(memoryview(buf)[:1])
 
 def _connect_proxy(proxy, host, port, *args):
-    """simple use of proxy to connect to host/port."""
+    """simple use of proxy to connect to host/port.
+
+    send basic CONNECT request, ignore headers.
+    Return resulting socket.
+    """
     if not isinstance(proxy, str):
         proxy = os.environ.get('https_proxy', os.environ.get('http_proxy'))
     pproto, addr = proxy.split('://', 1)
@@ -223,21 +227,40 @@ if hasattr(socket, 'AF_UNIX'):
         return s
 
 def bind(value=None, **kwargs):
-    """Return bound socket. Dispatch to bind_*."""
+    """Return bound socket. Dispatch to bind_*.
+
+    value: The bind specification.
+        None: Try unix socket, fallback to random inet socket
+        (ip, port): bind_inet
+        str:
+            'host:port': (contains 1 colon): parse into (ip, port) and
+                bind_inet
+            otherwise bind_unix
+    """
     if value is None:
         # prefer unix over inet
         try:
             return bind_unix(**kwargs)
         except NameError:
             return bind_inet(**kwargs)
-    if isinstance(value, tuple):
-        return bind_inet(value, **kwargs)
+    if isinstance(value, str):
+        parts = value.split(':')
+        if len(parts) == 2:
+            host, port = parts
+            return bind_inet((host, int(port)), **kwargs)
+        else:
+            return bind_unix(value, **kwargs)
     else:
-        return bind_unix(value, **kwargs)
+        return bind_inet(value, **kwargs)
 
 def connect(value, **kwargs):
     """Return connected socket. Dispatch to connect_*."""
-    if isinstance(value, tuple):
-        return connect_inet(value, **kwargs)
+    if isinstance(value, str):
+        parts = value.split(':')
+        if len(parts) == 2:
+            host, port = parts
+            return connect_inet((host, int(port)), **kwargs)
+        else:
+            return connect_unix(value, **kwargs)
     else:
-        return connect_unix(value, **kwargs)
+        return connect_inet(value, **kwargs)
