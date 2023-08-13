@@ -1,27 +1,22 @@
-"""Pickle using chunked semantics."""
+"""Pickle using chunked semantics.
+
+This format sends the size of the pickle before unpickling.  As a result
+it does not rely on `pickle.STOP`.  This means that this format does not
+have the same drawback as the raw pkl format.
+"""
 __all__ = ['Reader', 'BWriter', 'QWriter']
 import pickle
 
-from . import chunk
+from . import chunkview
 
+class Reader(chunkview.Reader):
+    def parse_view(self, view):
+        return pickle.loads(view)
 
-class Reader(chunk.Reader):
-    def readinto1(self, out):
-        L = []
-        try:
-            return super(Reader, self).readinto1(L)
-        finally:
-            if L:
-                try:
-                    for data in L:
-                        out.append(pickle.loads(data))
-                except pickle.UnpicklingError:
-                    return -1
-
-class BWriter(chunk.BWriter):
+class BWriter(chunkview.BWriter):
     def write(self, data):
         super(BWriter, self).write(pickle.dumps(data))
 
-class QWriter(chunk.QWriter):
+class QWriter(chunkview.QWriter):
     def write(self, data):
         super(QWriter, self).write(pickle.dumps(data))

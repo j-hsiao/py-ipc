@@ -1,4 +1,13 @@
-"""Serial pickles."""
+"""Serial pickles.
+
+This format is very easy to write because you just pickle.dump into
+the stream.  However, reading can have bad worst-case performance where
+data is read in chunks but every chunk contains `pickle.STOP`.  Every
+small chunk leads to an attempt to unpickle which will usually fail
+because the entire object has not been transferred yet.  This format is
+probably still be faster than chunked if objects are small or most
+objects do not contain `pickle.STOP` in its serialization.
+"""
 __all__ = ['Reader', 'Writer', 'QWriter']
 import io
 import pickle

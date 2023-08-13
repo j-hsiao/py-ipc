@@ -81,6 +81,47 @@ def test_readertime():
         ))
     print(min(timeit.repeat(script, setup, repeat=10, number=100)))
 
+def make_test_split_readertime(char):
+    def split_test():
+        setup = '\n'.join((
+            'from jhsiao.ipc.sockets.formats import pkl',
+            'import numpy as np',
+            'import io',
+            'buf = io.BytesIO()',
+            'import pickle',
+            'pickle.dump(32, buf)',
+            'pickle.dump((1, 2, 3), buf)',
+            'pickle.dump(np.full((480,640,3), ord({}), np.uint8), buf)'.format(char),
+            'import os',
+            'r, w = os.pipe()',
+            'r = io.open(r, "rb")',
+            'w = io.open(w, "wb")',
+            'view = memoryview(bytearray(1024))',
+            'readercls = pkl.Reader',
+            ))
+
+        script = '\n'.join((
+            'buf.seek(0)',
+            'objs = []',
+            'with readercls(r) as f:',
+            '    amt = buf.readinto(view)',
+            '    while amt:',
+            '        w.write(view[:amt])',
+            '        w.flush()',
+            '        f.readinto1(objs)',
+            '        amt = buf.readinto(view)',
+            '    while len(objs) != 3:',
+            '        f.readinto1(objs)',
+            '    f.detach()',
+            ))
+        print(min(timeit.repeat(script, setup, repeat=10, number=5)))
+    return split_test
+
+test_split_readertime_worst = make_test_split_readertime('pickle.STOP')
+test_split_readertime_best = make_test_split_readertime('"a"')
+
+
+
 def test_writer():
     class Dummy(object):
         def __init__(self, chunk):

@@ -5,6 +5,7 @@ S bytes: size of data
 N bytes: data
 
 Data is read/written as bytes or bytes-like objects.
+Return bytes or bytearray.  (every returned chunk is newly allocated).
 """
 __all__ = ['Reader', 'BWriter', 'QWriter']
 import io
