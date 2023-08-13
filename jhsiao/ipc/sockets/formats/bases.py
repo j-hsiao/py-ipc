@@ -113,11 +113,13 @@ class Reader(FileWrapper):
 class BufferedReader(Reader):
     """Read into a buffer that may grow."""
 
-    def __init__(self, f, maxsize=0, initial=io.DEFAULT_BUFFER_SIZE, **kwargs):
+    def __init__(self, f, maxsize=0, initial=io.DEFAULT_BUFFER_SIZE, factor=1.5, **kwargs):
         """Initialize a BufferedReader.
 
         f: the file to wrap.
         maxsize: int, maximum internal buffer size, 0=no limit.
+        initial: int, initial buffer size.
+        factor: float, the growth factor.
         """
         super(BufferedReader, self).__init__(f, **kwargs)
         self.buf = bytearray(initial)
@@ -125,20 +127,29 @@ class BufferedReader(Reader):
         self.stop = 0
         self._readinto = getattr(self.f, 'readinto1', self.f.readinto)
         self.maxsize = maxsize
+        self.factor = factor
+        if factor <= 1:
+            raise ValueError('Growth factor must be > 1')
 
-    def _grow(self, factor=1.5, constant=io.DEFAULT_BUFFER_SIZE):
+    def _grow(self, target=None, constant=io.DEFAULT_BUFFER_SIZE):
         """Grow the buffer.
 
         Raise if would exceed maxsize.
-        factor: growth factor.
         constant: growth constant.
 
-        Buffer grows by max of factor and constant.
+        Buffer grows by max of factor and constant, capped by maxsize
+        if applicable.
         """
         L = len(self.buf)
         if L == self.maxsize:
             raise ValueError('Read buffer too big.')
-        target = max(int(L * factor), L + constant)
+        if target is None or target <= L:
+            target = max(int(L * self.factor), L + constant)
+        else:
+            minsize = L + constant
+            while L < target:
+                L = int(L * self.factor)
+            target = max(L, minsize)
         if self.maxsize:
             self.buf = self.buf.ljust(min(target, self.maxsize))
         else:
