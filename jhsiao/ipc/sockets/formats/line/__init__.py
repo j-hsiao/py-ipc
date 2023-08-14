@@ -1,1 +1,0 @@
-"""Newline delimited bytes"""

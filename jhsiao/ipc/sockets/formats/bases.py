@@ -187,6 +187,8 @@ class BufferedReader(Reader):
             return None
         elif amt == 0:
             return -1
+        else:
+            raise ValueError('Unexpected readinto return value {}'.format(amt))
 
 class Writer(FileWrapper):
     """Write objects."""
