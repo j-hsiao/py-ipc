@@ -14,15 +14,24 @@ if sys.version_info.major < 3:
     from itertools import imap as map
 
 def getfd(item):
-    if hasattr(item, 'fileno'):
-        return item.fileno()
-    else:
+    """Get the fd if not an fd (int)."""
+    if isinstance(item, int):
         return item
+    else:
+        return item.fileno()
 
-class BasePoller(object):
-    """Base poller class.  Set the interface.
+class _Poller(object):
+    """Base poller class.
 
     Registered items should have a fileno() or be a fileno.
+    In addition to methods, subclasses should also have the following
+    attributes used as mode for modify() and register():
+        r: poll reading
+        w: poll writing
+        x: poll error
+        o: use one-shot semantics
+        flags: dict of each rwxo to int
+    Registered items when polled are returned as was registered.
     """
     def __iter__(self):
         """Iterate on items that have been registered."""
@@ -30,31 +39,41 @@ class BasePoller(object):
 
     def unregister(self, item):
         """Unregister an item by value or fd."""
-        raise NotImplementedError
+        del self[item]
+
+    def __delitem__(self, item):
+        """Unregister an item, defaults to calling unregister()."""
+        self.unregister(item)
+
+    def __setitem__(self, item, mode):
+        """Register an item.  Defaults to calling register()."""
+        self.register(item, mode)
+
     def register(self, item, mode):
         """Register an item by value or fd.
 
-        item will be what is returned if polled.
-        mode can be an int (varies by class based on the underlying
-        implementation) or can be a str of flags 'rwxo' for general
-        read/write/error/oneshot.
-        """
-        raise NotImplementedError
-    def modify(self, item, mode):
-        """Change registration mode of item.
+        `item` will be what is returned if polled.
+        `mode` should be a bitwise or of rwxo attributes.
+            Alternatively, it can be a string containing any
+            of 'rwxo' with the same corresponding meanings as the
+            attributes.
 
-        Can also be used to change the returned value when the
-        corresponding fd is polled.
-        eg:
-            with open('filename', 'w') as f:
-                poller.register(f, mode)
-                # polling would return f the file object
-                poller.modify(f.fileno(), mode)
-                # now polling will return the fileno
+        Items that are already registered will be unregistered first.
         """
-        raise NotImplementedError
+        self[item] = mode
 
     def close(self):
+        raise NotImplementedError
+
+    def anypoll(self, timeout=-1, events=False):
+        """Poll for events.
+
+        Same as poll() but assume all registered items will only
+        ever be triggered by a single particular type of event.
+        All items will be returned in a single list.
+        This might be a little more efficient for true pollers because
+        they don't need to be added to corresponding lists.
+        """
         raise NotImplementedError
 
     def poll(self, timeout=-1, events=False):
@@ -67,13 +86,21 @@ class BasePoller(object):
         """
         raise NotImplementedError
 
-class _TruePoller(BasePoller):
+    def _get_flags(self, mode):
+        """Translate str flags into int flags."""
+        if isinstance(mode, int):
+            return mode
+        flags = 0
+        for m in mode:
+            flags |= self.flags[m]
+        return flags
+
+
+class _TruePoller(_Poller):
     """Wrap an actual polling object.
 
     Subclasses should have the following attributes:
         cls: the actual implementing class
-        RFLAGS, WFLAGS, XFLAGS: a mask of corresponding  read, write,
-            and error flags.
     """
     def __init__(self):
         self.e = self.cls()
@@ -82,28 +109,28 @@ class _TruePoller(BasePoller):
     def __iter__(self):
         return iter(self.items.values())
 
-    def unregister(self, item):
+    def __delitem__(self, item):
         fd = getfd(item)
-        self.items.pop(fd)
-        try:
-            self.e.unregister(fd)
-        except Exception:
-            traceback.print_exc()
+        if self.items.pop(fd, None) is not None:
+            try:
+                self.e.unregister(fd)
+            except Exception:
+                traceback.print_exc()
 
-    def register(self, item, mode):
+    def __setitem__(self, item, mode):
         fd = getfd(item)
         if fd in self.items:
             self.unregister(fd)
         self.e.register(fd, self._get_flags(mode))
         self.items[fd] = item
 
-    def modify(self, item, mode):
-        fd = getfd(item)
-        if fd not in self.items:
-            raise ValueError(
-                'Tried to modify {} which was never registered'.format(item))
-        self.e.modify(fd, self._get_flags(mode))
-        self.items[fd] = item
+    def anypoll(self, timeout=-1, events=False):
+        if timeout is None:
+            timeout = -1
+        if events:
+            return self.e.poll(timeout)
+        else:
+            return [self.items[fd] for fd, ev in self.e.poll(timeout)]
 
     def poll(self, timeout=-1, events=False):
         if timeout is None:
@@ -118,59 +145,53 @@ class _TruePoller(BasePoller):
             if ev & self.XFLAGS:
                 x.append(item)
         return r, w, x
+
     def close(self):
         self.e.close()
         self.items.clear()
 
-    def _get_flags(self, mode):
-        """Translate str flags into int flags."""
-        if isinstance(mode, int):
-            return mode
-        flags = 0
-        for m in mode:
-            flags |= getattr(self, m.upper()+'FLAGS', 0)
-        return flags
-
 class OneshotWrapper(object):
-    """Add one-shot-like behavior to raw poller."""
-    def __init__(self, orig, oneshot_flag):
+    """Wrap a python raw poller class."""
+    def __init__(self, r):
         """Iniitalize wrapper to add oneshot behavior."""
-        self.orig = orig
-        self.OFLAG = oneshot_flag
-        self.RFLAG = ~oneshot_flag
+        super(OneshotWrapper, self).__init__()
         self.oneshot = set()
-        self._unregister = orig.unregister
-        self._register = orig.register
-        self._modify = orig.modify
-        self._poll = orig.poll
-        self._close = orig.close
 
-    def unregister(self, fd):
+    def __del__(self, item):
+        fd = getfd(item)
         self.oneshot.discard(fd)
-        self._unregister(fd)
-    def register(self, fd, flags):
-        nflags = flags & self.RFLAG
-        self._register(fd, nflags)
-        if nflags != flags:
-            self.oneshot.add(fd)
-        else:
+        super(OneshotWrapper, self).__delitem__(fd)
+
+    def __setitem__(self, item, mode):
+        fd = getfd(item)
+        mode = self._get_flags(mode)
+        flags = mode & self.n
+        super(OneshotWrapper, self).__setitem__(fd, flags)
+        if flags == mode:
             self.oneshot.discard(fd)
-    def modify(self, fd, flags):
-        nflags = flags & self.RFLAG
-        self._register(fd, nflags)
-        if nflags != flags:
-            self.oneshot.add(fd)
         else:
-            self.oneshot.discard(fd)
+            self.oneshot.add(fd)
+
+    def anypoll(self, timeout=-1, events=False):
+        L = super(OneshotWrapper, self).anypoll(timeout, events)
+        if events:
+            for item, v in L:
+                if item24k
+
     def poll(self, timeout=-1):
+        r, w, x = super(OneshotWrapper, self).poll(timeout, events)
+
+
         ret = self._poll(timeout)
         for fd, ev in ret:
             if fd in self.oneshot:
                 self._modify(fd, 0)
         return ret
+
     def close(self):
-        self.oneshot.clear()
         self._close()
+        self.oneshot.clear()
+
 
 if hasattr(select, 'select'):
     class SelectPoller(object):
