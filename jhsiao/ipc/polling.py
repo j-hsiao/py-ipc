@@ -6,6 +6,7 @@ linux may have epoll etc, which generally have better performance.
 """
 from __future__ import print_function
 __all__ = ['Poller']
+from collections import defaultdict
 import select
 import sys
 from itertools import chain
@@ -37,10 +38,6 @@ class _Poller(object):
         """Iterate on items that have been registered."""
         raise NotImplementedError
 
-    def unregister(self, item):
-        """Unregister an item by value or fd."""
-        del self[item]
-
     def __delitem__(self, item):
         """Unregister an item, defaults to calling unregister()."""
         self.unregister(item)
@@ -48,6 +45,10 @@ class _Poller(object):
     def __setitem__(self, item, mode):
         """Register an item.  Defaults to calling register()."""
         self.register(item, mode)
+
+    def unregister(self, item):
+        """Unregister an item by value or fd."""
+        del self[item]
 
     def register(self, item, mode):
         """Register an item by value or fd.
@@ -73,6 +74,7 @@ class _Poller(object):
         All items will be returned in a single list.
         This might be a little more efficient for true pollers because
         they don't need to be added to corresponding lists.
+        There should be at least 1 registered fd for polling.
         """
         raise NotImplementedError
 
@@ -83,6 +85,7 @@ class _Poller(object):
         Returns 3 lists of results corresponding to read, write,  and
         error based on the polled event.  If events is set, then also
         return the corresponding event that was triggered.
+        There should be at least 1 registered fd for polling.
         """
         raise NotImplementedError
 
@@ -95,234 +98,191 @@ class _Poller(object):
             flags |= self.flags[m]
         return flags
 
-
-class _TruePoller(_Poller):
-    """Wrap an actual polling object.
-
-    Subclasses should have the following attributes:
-        cls: the actual implementing class
-    """
-    def __init__(self):
-        self.e = self.cls()
-        self.items = {}
-
-    def __iter__(self):
-        return iter(self.items.values())
-
-    def __delitem__(self, item):
-        fd = getfd(item)
-        if self.items.pop(fd, None) is not None:
-            try:
-                self.e.unregister(fd)
-            except Exception:
-                traceback.print_exc()
-
-    def __setitem__(self, item, mode):
-        fd = getfd(item)
-        if fd in self.items:
-            self.unregister(fd)
-        self.e.register(fd, self._get_flags(mode))
-        self.items[fd] = item
-
-    def anypoll(self, timeout=-1, events=False):
-        if timeout is None:
-            timeout = -1
-        if events:
-            return self.e.poll(timeout)
-        else:
-            return [self.items[fd] for fd, ev in self.e.poll(timeout)]
-
-    def poll(self, timeout=-1, events=False):
-        if timeout is None:
-            timeout = -1
-        r, w, x = [], [], []
-        for fd, ev in self.e.poll(timeout):
-            item = (self.items[fd], ev) if events else self.items[fd]
-            if ev & self.RFLAGS:
-                r.append(item)
-            if ev & self.WFLAGS:
-                w.append(item)
-            if ev & self.XFLAGS:
-                x.append(item)
-        return r, w, x
-
-    def close(self):
-        self.e.close()
-        self.items.clear()
-
-class OneshotWrapper(object):
-    """Wrap a python raw poller class."""
-    def __init__(self, r):
-        """Iniitalize wrapper to add oneshot behavior."""
-        super(OneshotWrapper, self).__init__()
-        self.oneshot = set()
-
-    def __del__(self, item):
-        fd = getfd(item)
-        self.oneshot.discard(fd)
-        super(OneshotWrapper, self).__delitem__(fd)
-
-    def __setitem__(self, item, mode):
-        fd = getfd(item)
-        mode = self._get_flags(mode)
-        flags = mode & self.n
-        super(OneshotWrapper, self).__setitem__(fd, flags)
-        if flags == mode:
-            self.oneshot.discard(fd)
-        else:
-            self.oneshot.add(fd)
-
-    def anypoll(self, timeout=-1, events=False):
-        L = super(OneshotWrapper, self).anypoll(timeout, events)
-        if events:
-            for item, v in L:
-                if item24k
-
-    def poll(self, timeout=-1):
-        r, w, x = super(OneshotWrapper, self).poll(timeout, events)
-
-
-        ret = self._poll(timeout)
-        for fd, ev in ret:
-            if fd in self.oneshot:
-                self._modify(fd, 0)
-        return ret
-
-    def close(self):
-        self._close()
-        self.oneshot.clear()
-
-
 if hasattr(select, 'select'):
     class SelectPoller(object):
         """Wrap the select interface in poll-like interface."""
         backend = 'select'
         select = select.select
-        RFLAGS = 1
-        WFLAGS = 2
-        XFLAGS = 4
-        OFLAGS = 8
+        r = 1
+        w = 2
+        x = 4
+        o = 8
+        n = ~8
+        flags = dict(r=1, w=2, x=4, o=8)
         NFLAGS = ((1, 'r'), (2, 'w'), (4, 'x'), (8, 'o'))
+
         def __init__(self):
-            self.r = {}
-            self.w = {}
-            self.x = {}
-            self.o = {}
+            self.items = {}
+            self.ritems = set()
+            self.witems = set()
+            self.xitems = set()
+            self.ofds = set()
+            self.strmap = dict(
+                r=self.ritems, w=self.witems,
+                x=self.xitems, o=self.ofds)
+            self.flagmap = {
+                self.r=self.ritems, self.w=self.witems,
+                self.x=self.xitems, self.o=self.ofds}
 
         def __iter__(self):
-            ret = dict(self.r)
-            ret.update(self.w)
-            ret.update(self.x)
-            ret.update(self.o)
-            return iter(ret.values())
+            return iter(self.items.values())
 
-        def unregister(self, item):
+        def __delitem__(self, item):
             fd = getfd(item)
-            for d in (self.r, self.w, self.x, self.o):
-                d.pop(fd, None)
+            self.items.pop(fd)
+            for st in self.strmap.values():
+                st.discard(fd)
 
-        def _popornot(self, add, f, fd, item):
-            if add:
-                getattr(self, f)[fd] = item
-            else:
-                getattr(self, f).pop(fd, None)
-
-        def register(self, item, flags):
+        def __setitem__(self, item, mode):
             fd = getfd(item)
             if isinstance(flags, int):
-                for v, f in self.NFLAGS:
-                    self._popornot(flags & v, f, fd, item)
+                for flag, d in self.flagmap.items():
+                    if mode & flag:
+                        d.add(fd)
+                    else:
+                        d.discard(fd)
             else:
-                for f in 'rwxo':
-                    self._popornot(f in flags, f, fd, item)
+                for flag, d in self.strmap.items():
+                    if flag in mode:
+                        d.add(fd)
+                    else:
+                        d.discard(fd)
+            self.items[fd] = item
 
-        def _gpopornot(self, add, f, fd, item):
-            if add:
-                d = getattr(self, f)
-                orig = d.get(fd, None)
-                d[fd] = item
-                return orig
-            else:
-                return getattr(self, f).pop(fd, None)
+        def close(self):
+            self.items.clear()
+            for v in self.strmap.values():
+                v.clear()
 
-        def modify(self, item, flags):
-            fd = getfd(item)
-            orig = None
-            if isinstance(flags, int):
-                for v, f in self.NFLAGS:
-                    orig = self._gpopornot(v&flags, f, fd, item) or orig
+        def anypoll(self, timeout=-1, events=False):
+            if timeout is not None and timeout < 0:
+                timeout = None
+            rwx = select.select(
+                self.ritems, self.witems, self.xitems, timeout)
+            if events:
+                fdflags = defaultdict(int)
+                for fds, flag in zip(rwx, (self.r, self.w, self.x)):
+                    for fd in fds:
+                        fdflags[fd] |= flag
+                oneshots = self.ofds.intersection(fdflags)
+                ret = [
+                    (self.items[fd], flag)
+                    for fd, flag in fdflags.items()]
             else:
-                for f in 'rwxo':
-                    orig = self._gpopornot(f in flags, f, fd, item) or orig
-            if orig is None:
-                self.unregister(item)
-                raise ValueError(
-                    ('Tried to modify {} which '
-                    'was never registered').format(item))
+                allfds = set().union(*rwx)
+                oneshots = self.ofds.intersection(allfds)
+                ret = [self.items[fd] for fd in allfds]
+            if oneshots:
+                self.ritems.difference_update(oneshots)
+                self.witems.difference_update(oneshots)
+                self.xitems.difference_update(oneshots)
+            return ret
 
         def poll(self, timeout=None, events=False):
             """Note that if no active fds, then instant return with empty lists."""
             if timeout is not None and timeout < 0:
                 timeout = None
-            r = self.r
-            w = self.w
-            x = self.x
-            try:
-                lsts = self.select(r, w, x, timeout)
-            except Exception:
-                if not any((r,w,x)):
-                    return ((),(),())
-                else:
-                    raise
+            rwx = select.select(
+                self.ritems, self.witems, self.xitems, timeout)
+            allfds = set().union(*rwx)
+            oneshots = self.ofds.intersection(allfds)
             if events:
                 ret = [
-                    [(dct[fd], ev) for fd in lst]
-                    for dct, lst, ev in zip(dct, lsts, (1,2,4))]
+                    [(self.items[fd], flag) for fd in fds]
+                    for fds, flag in zip(rwx, (self.r, self.w, self.x)]
             else:
-                ret = [
-                    [dct[fd] for fd in lst]
-                    for dct, lst in zip((r,w,x), lsts)]
-            o = self.o
-            if o:
-                s = set(o)
-                for dct, lst in zip((r,w,x), lsts):
-                    for k in s.intersection(lst):
-                        dct.pop(k, None)
+                ret = [[self.items[fd] for fd in fds] for fds in rwx]
+            if oneshots:
+                self.ritems.difference_update(oneshots)
+                self.witems.difference_update(oneshots)
+                self.xitems.difference_update(oneshots)
             return ret
 
-        def close(self):
-            for f in 'rwxo':
-                getattr(self, f).clear()
     Poller = SelectPoller
 
 if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
-    class PPoller(_TruePoller):
-        """Wrap the poll interface."""
+    class PPoller(_Poller):
+        """_Poller to wrap devpoll or poll with oneshot behavior."""
         IN = select.POLLIN
         PRI = select.POLLPRI
         OUT = select.POLLOUT
         ERR = select.POLLERR
-        RFLAGS = IN|PRI
-        WFLAGS = OUT
-        XFLAGS = ERR
-        def OFLAGS():
-            flags = [
-                flag for flag in dir(select) if flag.startswith('POLL')]
-            vals = [getattr(select, flag) for flag in flags]
-            total = 0
-            for val in vals:
-                if isinstance(total, int):
-                    total |= val
-            shift = 0
-            while 1:
-                val = 1 << shift
-                if not val & total:
-                    return val
-                shift += 1
-        OFLAGS = OFLAGS()
+        r = IN|PRI
+        w = OUT
+        x = ERR
+        o = 2 ** max([
+            getattr(select, flag)
+            for flag in dir(select)
+            if flag.startswith('POLL')
+        ]).bit_length()
+        n = ~o
+
         def __init__(self):
-            super(PollPoller, self).__init__()
-            self.e = OneshotWrapper(self.e, self.OFLAGS)
+            """Iniitalize wrapper to add oneshot behavior."""
+            self.e = self.cls()
+            self.items = {}
+            self.oneshot = set()
+
+        def __iter__(self):
+            return iter(self.items.values())
+
+        def __delitem__(self, item):
+            fd = getfd(item)
+            if self.items.pop(fd, None) is not None:
+                self.oneshot.discard(fd)
+                try:
+                    self.e.unregister(fd)
+                except Exception:
+                    traceback.print_exc()
+
+        def __setitem__(self, item, mode):
+            fd = getfd(item)
+            if fd in self.items:
+                self.unregister(fd)
+            mode = self._get_flags(mode)
+            flags = mode & self.n
+            self.e.register(fd, flags)
+            self.items[fd] = item
+            if flags != mode:
+                self.oneshot.add(fd)
+            else:
+                self.oneshot.discard(fd)
+
+        def anypoll(self, timeout=-1, events=False):
+            if timeout is None:
+                timeout = -1
+            vals = self.e.poll(timeout)
+            fds = [fd for fd, ev in vals]
+            oneshots = self.oneshot.intersection(fds)
+            if events:
+                ret = [(self.items[fd], flag) for fd, flag in vals]
+            else:
+                ret = [self.items[fd] for fd in fds]
+            for fd in oneshots:
+                self.unregister(fd)
+            return ret
+
+        def poll(self, timeout=-1, events=False):
+            if timeout is None:
+                timeout = -1
+            vals = self.e.poll(timeout)
+            if events:
+                ret = [
+                    [(self.items[fd], flag) for fd, flag in vals if flag & mode]
+                    for mode in (self.r, self.w, self.x)]
+            else:
+                ret = [
+                    [self.items[fd] for fd, flag in vals if flag & mode]
+                    for mode in (self.r, self.w, self.x)]
+            oneshots = self.oneshot.intersection([fd for fd, ev in vals])
+            for fd in oneshots:
+                self.unregister(fd)
+            return r, w, x
+
+        def close(self):
+            self.e.close()
+            self.items.clear()
+
     if hasattr(select, 'devpoll'):
         class DevpollPoller(PPoller):
             cls = select.devpoll
@@ -335,23 +295,79 @@ if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
         Poller = PollPoller
 
 if hasattr(select, 'epoll'):
-    class EpollPoller(_TruePoller):
-        """Wrap the epoll interface."""
+    class EpollPoller(_Poller):
+        """Wrap an actual polling object.
+
+        Subclasses should have the following attributes:
+            cls: the actual implementing class
+        """
         cls = select.epoll
         backend = 'epoll'
-        cls = select.epoll
         IN = select.EPOLLIN
+        OUT = select.EPOLLOUT
         PRI = select.EPOLLPRI
+        ERR = select.EPOLLERR
+        HUP = select.EPOLLHUP
+        ET = select.EPOLLET
+        ONESHOT = select.EPOLLONESHOT
+        EXCLUSIVE = select.EPOLLEXCLUSIVE
+        RDHUP = select.EPOLLRDHUP
         RDNORM = select.EPOLLRDNORM
         RDBAND = select.EPOLLRDBAND
-        OUT = select.EPOLLOUT
         WRNORM = select.EPOLLWRNORM
         WRBAND = select.EPOLLWRBAND
-        ERR = select.EPOLLERR
-        RFLAGS = IN|PRI|RDNORM|RDBAND
-        WFLAGS = OUT|WRNORM|WRBAND
-        XFLAGS = ERR
-        OFLAGS = select.EPOLLONESHOT
+        MSG = select.EPOLLMSG
+        r = IN|RDNORM|RDBAND
+        w = OUT|WRNORM|WRBAND
+        x = ERR
+        o = select.EPOLLONESHOT
+        def __init__(self):
+            self.e = self.cls()
+            self.items = {}
+
+        def __iter__(self):
+            return iter(self.items.values())
+
+        def __delitem__(self, item):
+            fd = getfd(item)
+            if self.items.pop(fd, None) is not None:
+                try:
+                    self.e.unregister(fd)
+                except Exception:
+                    traceback.print_exc()
+
+        def __setitem__(self, item, mode):
+            fd = getfd(item)
+            if fd in self.items:
+                self.unregister(fd)
+            self.e.register(fd, self._get_flags(mode))
+            self.items[fd] = item
+
+        def anypoll(self, timeout=-1, events=False):
+            if timeout is None:
+                timeout = -1
+            if events:
+                return self.e.poll(timeout)
+            else:
+                return [self.items[fd] for fd, ev in self.e.poll(timeout)]
+
+        def poll(self, timeout=-1, events=False):
+            if timeout is None:
+                timeout = -1
+            vals = self.e.poll(timeout)
+            if events:
+                return [
+                    [(self.items[fd], flag) for fd, flag in vals if flag & mode]
+                    for mode in (self.r, self.w, self.x)]
+            else:
+                return [
+                    [self.items[fd] for fd, flag in vals if flag & mode]
+                    for mode in (self.r, self.w, self.x)]
+
+        def close(self):
+            self.e.close()
+            self.items.clear()
+
     Poller = EpollPoller
 
 try:
