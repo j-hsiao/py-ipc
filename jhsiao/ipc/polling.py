@@ -99,8 +99,14 @@ class _Poller(object):
         return flags
 
 if hasattr(select, 'select'):
-    class SelectPoller(object):
-        """Wrap the select interface in poll-like interface."""
+    __all__.append('SelectPoller')
+    class SelectPoller(_Poller):
+        """Wrap the select interface in poll-like interface.
+
+        NOTE: calling select with all empty lists results in invalid
+        arguments on windows which will result in instant return of
+        empty lists.
+        """
         backend = 'select'
         select = select.select
         r = 1
@@ -121,8 +127,8 @@ if hasattr(select, 'select'):
                 r=self.ritems, w=self.witems,
                 x=self.xitems, o=self.ofds)
             self.flagmap = {
-                self.r=self.ritems, self.w=self.witems,
-                self.x=self.xitems, self.o=self.ofds}
+                self.r: self.ritems, self.w: self.witems,
+                self.x: self.xitems, self.o: self.ofds}
 
         def __iter__(self):
             return iter(self.items.values())
@@ -135,7 +141,7 @@ if hasattr(select, 'select'):
 
         def __setitem__(self, item, mode):
             fd = getfd(item)
-            if isinstance(flags, int):
+            if isinstance(mode, int):
                 for flag, d in self.flagmap.items():
                     if mode & flag:
                         d.add(fd)
@@ -157,8 +163,13 @@ if hasattr(select, 'select'):
         def anypoll(self, timeout=-1, events=False):
             if timeout is not None and timeout < 0:
                 timeout = None
-            rwx = select.select(
-                self.ritems, self.witems, self.xitems, timeout)
+            try:
+                rwx = select.select(
+                    self.ritems, self.witems, self.xitems, timeout)
+            except OSError:
+                if not self.ritems and not self.witems and not self.xitems:
+                    return []
+                raise
             if events:
                 fdflags = defaultdict(int)
                 for fds, flag in zip(rwx, (self.r, self.w, self.x)):
@@ -182,14 +193,19 @@ if hasattr(select, 'select'):
             """Note that if no active fds, then instant return with empty lists."""
             if timeout is not None and timeout < 0:
                 timeout = None
-            rwx = select.select(
-                self.ritems, self.witems, self.xitems, timeout)
+            try:
+                rwx = select.select(
+                    self.ritems, self.witems, self.xitems, timeout)
+            except OSError:
+                if not self.ritems and not self.witems and not self.xitems:
+                    return [], [], []
+                raise
             allfds = set().union(*rwx)
             oneshots = self.ofds.intersection(allfds)
             if events:
                 ret = [
                     [(self.items[fd], flag) for fd in fds]
-                    for fds, flag in zip(rwx, (self.r, self.w, self.x)]
+                    for fds, flag in zip(rwx, (self.r, self.w, self.x))]
             else:
                 ret = [[self.items[fd] for fd in fds] for fds in rwx]
             if oneshots:
@@ -201,7 +217,7 @@ if hasattr(select, 'select'):
     Poller = SelectPoller
 
 if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
-    class PPoller(_Poller):
+    class _PPoller(_Poller):
         """_Poller to wrap devpoll or poll with oneshot behavior."""
         IN = select.POLLIN
         PRI = select.POLLPRI
@@ -284,17 +300,20 @@ if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
             self.items.clear()
 
     if hasattr(select, 'devpoll'):
-        class DevpollPoller(PPoller):
+        __all__.append('DevpollPoller')
+        class DevpollPoller(_PPoller):
             cls = select.devpoll
             backend = 'devpoll'
         Poller = DevpollPoller
     if hasattr(select, 'poll'):
-        class PollPoller(PPoller):
+        __all__.append('PollPoller')
+        class PollPoller(_PPoller):
             cls = select.poll
             backend = 'poll'
         Poller = PollPoller
 
 if hasattr(select, 'epoll'):
+    __all__.append('EpollPoller')
     class EpollPoller(_Poller):
         """Wrap an actual polling object.
 
