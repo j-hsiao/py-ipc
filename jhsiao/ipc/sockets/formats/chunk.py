@@ -56,8 +56,10 @@ class Reader(bases.Reader):
             try:
                 amt = self._readinto(view[self.pos:])
             except EnvironmentError as e:
-                if e.errno == bases.EAGAIN or e.errno == bases.EWOULDBLOCK:
+                if e.errno in bases.WOULDBLOCK:
                     return None
+                elif e.errno == bases.EINTR:
+                    return self.readinto1(out)
                 raise
             if amt:
                 pos = self.pos + amt
@@ -98,8 +100,10 @@ class Reader(bases.Reader):
             try:
                 amt = self._readinto(self.pview)
             except EnvironmentError as e:
-                if e.errno == bases.EAGAIN or e.errno == bases.EWOULDBLOCK:
+                if e.errno in bases.WOULDBLOCK:
                     return None
+                elif e.errno == bases.EINTR:
+                    return self.readinto1(out)
                 raise
             if amt:
                 remain = self.pview[amt:]
@@ -124,23 +128,26 @@ class Reader(bases.Reader):
         view = self.pview
         total = len(view)
         amt = 0
-        try:
-            while amt < total:
+        while amt < total:
+            try:
                 chunk = self._readinto(view[amt:])
-                if chunk:
-                    amt += chunk
-                elif chunk is None:
+            except EnvironmentError as e:
+                if e.errno in bases.WOULDBLOCK:
+                    self.pview = view[amt:]
                     return None
-                elif chunk == 0:
-                    return -1
-            out.append(self.partial)
-            p = self.partial
-            self.partial = self.pview = None
-            return len(p) + self.pre
-        except EnvironmentError as e:
-            if e.errno == bases.EAGAIN or e.errno == bases.EWOULDBLOCK:
+                elif e.errno == bases.EINTR:
+                    continue
+                raise
+            if chunk:
+                amt += chunk
+            elif chunk is None:
                 return None
-            raise
+            elif chunk == 0:
+                return -1
+        out.append(self.partial)
+        p = self.partial
+        self.partial = self.pview = None
+        return len(p) + self.pre
 
 class BWriter(bases.BWriter):
     def write(self, data):

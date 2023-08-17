@@ -63,8 +63,10 @@ class Reader(bases.BufferedReader):
         try:
             amt = self._readinto(self.view[self.stop:])
         except EnvironmentError as e:
-            if e.errno == EAGAIN or e.errno == EWOULDBLOCK:
+            if e.errno in bases.WOULDBLOCK:
                 return None
+            elif e.errno == bases.EINTR:
+                return self.readinto1(out)
             raise
         # non-blocking, still valid.
         if amt:

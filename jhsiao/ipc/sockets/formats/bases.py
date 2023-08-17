@@ -23,14 +23,18 @@ import platform
 try:
     import errno
 except ImportError:
+    EINTR = 4
     EAGAIN = 11
     EWOULDBLOCK = 10035 if platform.system() == 'Windows' else 11
 else:
+    EINTR = getattr(errno, 'EINTR', 4)
     EAGAIN = getattr(errno, 'EAGAIN', 11)
     EWOULDBLOCK = getattr(
         errno,
         'EWOULDBLOCK',
         10035 if platform.system() == 'Windows' else 11)
+
+WOULDBLOCK = set([EAGAIN, EWOULDBLOCK])
 
 class FileWrapper(object):
     def __init__(self, f):
@@ -175,8 +179,10 @@ class BufferedReader(Reader):
         try:
             amt = self._readinto(self.view[self.stop:])
         except EnvironmentError as e:
-            if e.errno == EAGAIN or e.errno == EWOULDBLOCK:
+            if e.errno in WOULDBLOCK:
                 return None
+            elif e.errno == EINTR:
+                return self.readinto1(out)
             raise
         # non-blocking, still valid.
         if amt:
@@ -262,8 +268,10 @@ class QWriter(Writer):
             try:
                 amt = self.f.write(view)
             except EnvironmentError as e:
-                if e.errno == EAGAIN or e.errno == EWOULDBLOCK:
+                if e.errno in WOULDBLOCK:
                     return None
+                elif e.errno == EINTR:
+                    return self.flush1()
                 raise
             view = view[amt:]
             if len(view):
@@ -280,12 +288,10 @@ class QWriter(Writer):
         """Keep writing until all flushed.
 
         Stop if block or error.
-        Return
-            -1 if error
-            None if blocked
-            0 if fully flushed
+        Return the total number of bytes flushed.
+        None if would block and no bytes flushed.
         """
-        ret = 0
+        numflushed = 0
         while self.q:
             view = self.q[0]
             target = len(view)
@@ -294,19 +300,21 @@ class QWriter(Writer):
                 try:
                     chunk = self.f.write(view[amt:])
                 except EnvironmentError as e:
-                    if e.errno == EAGAIN or e.errno == EWOULDBLOCK:
+                    if e.errno in WOULDBLOCK:
                         self.q[0] = view[amt:]
-                        return None
+                        return numflushed + amt or None
+                    elif e.errno == EINTR:
+                        chunk = 0
                     raise
                 except Exception:
                     self.q[0] = view[amt:]
                     raise
                 if chunk is None:
                     self.q[0] = view[amt:]
-                    return None
+                    return numflushed + amt or None
                 else:
                     amt += chunk
-            ret += target
+            numflushed += target
             self.q.popleft()
         self.f.flush()
-        return ret
+        return numflushed
