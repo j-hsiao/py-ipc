@@ -278,6 +278,7 @@ def send_polling(pollercls):
 
 
         poller[s] = 'wo'
+        now = time.time()
         assert list(poller.anypoll(.1)) == [s]
         assert time.time() - now < .05
         now = time.time()

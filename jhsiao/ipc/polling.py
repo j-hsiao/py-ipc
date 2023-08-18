@@ -114,7 +114,7 @@ if hasattr(select, 'select'):
         x = 4
         o = 8
         n = ~8
-        flags = dict(r=1, w=2, x=4, o=8)
+        flags = dict(r=r, w=w, x=x, o=o)
         NFLAGS = ((1, 'r'), (2, 'w'), (4, 'x'), (8, 'o'))
 
         def __init__(self):
@@ -231,6 +231,7 @@ if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
             for flag in dir(select)
             if flag.startswith('POLL')
         ]).bit_length()
+        flags = dict(r=r, w=w, x=x, o=o)
         n = ~o
 
         def __init__(self):
@@ -267,6 +268,8 @@ if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
         def anypoll(self, timeout=-1, events=False):
             if timeout is None:
                 timeout = -1
+            if timeout > 0:
+                timeout *= 1000
             vals = self.e.poll(timeout)
             fds = [fd for fd, ev in vals]
             oneshots = self.oneshot.intersection(fds)
@@ -281,6 +284,8 @@ if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
         def poll(self, timeout=-1, events=False):
             if timeout is None:
                 timeout = -1
+            if timeout > 0:
+                timeout *= 1000
             vals = self.e.poll(timeout)
             if events:
                 ret = [
@@ -293,7 +298,7 @@ if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
             oneshots = self.oneshot.intersection([fd for fd, ev in vals])
             for fd in oneshots:
                 self.unregister(fd)
-            return r, w, x
+            return ret
 
         def close(self):
             self.e.close()
@@ -340,6 +345,7 @@ if hasattr(select, 'epoll'):
         w = OUT|WRNORM|WRBAND
         x = ERR
         o = select.EPOLLONESHOT
+        flags = dict(r=r, w=w, x=x, o=o)
         def __init__(self):
             self.e = self.cls()
             self.items = {}
