@@ -34,16 +34,23 @@ else:
 
 class Reader(object):
     """Wrap a poller and read completed messages."""
-    def __init__(self, poller, wrappercls):
+    def __init__(self, poller, exiter):
         """Initialize a ListenReader.
 
         listener: The raw listening socket.
         poller: A `jhsiao.ipc.polling` Poller
-        wrappercls: A class to wrap incoming socket.
+            Assume poller only has items registered as 'ro' or
+            equivalent.  Items should also be in non-blocking mode.
+        exiter: obj with fileno()
+            This should already be registered with poller.
+            When it becomes readable, it indicates that the thread
+            should stop.
         """
         self.poller = poller
         self.cond = threading.Condition()
         self.q = []
+        self.exiter = exiter
+        self.thread = threading.Thread(target=self._run)
 
     def _predicate(self):
         return self.q
@@ -59,9 +66,45 @@ class Reader(object):
             self.q = []
             return ret
 
+    def start(self):
+        self.thread.start()
+
+    def join(self):
+        self.thread.join()
+
     def _run(self):
         """Continually poll for new data.
 
         When messages are completed, add to self.q
         """
-        # TODO
+        exiter = self.exiter
+        reading = []
+        poller = self.poller
+        rearm = poller.r | poller.o
+        cond = self.cond
+        isselect = poller.backend == 'select'
+        while 1:
+            if isselect:
+                reading.extend(poller.poll(0 if reading else None)[0])
+            else:
+                reading.extend(poller.anypoll(0 if reading else None))
+            if reading:
+                nreading = []
+                with cond:
+                    q = self.q
+                    notify = False
+                    for r in reading:
+                        if r is exiter:
+                            return
+                        amt = r.readinto1(q)
+                        if amt is None:
+                            poller.register(r, rearm)
+                        elif amt < 0:
+                            r.close()
+                        else:
+                            if amt > 0:
+                                notify = True
+                            nreading.append(r)
+                    if notify:
+                        cond.notify()
+                reading = nreading

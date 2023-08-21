@@ -32,6 +32,7 @@ class _Poller(object):
         x: poll error
         o: use one-shot semantics
         flags: dict of each rwxo to int
+        backend: name of backend.
     Registered items when polled are returned as was registered.
     """
     def __iter__(self):
@@ -219,13 +220,9 @@ if hasattr(select, 'select'):
 if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
     class _PPoller(_Poller):
         """_Poller to wrap devpoll or poll with oneshot behavior."""
-        IN = select.POLLIN
-        PRI = select.POLLPRI
-        OUT = select.POLLOUT
-        ERR = select.POLLERR
-        r = IN|PRI
-        w = OUT
-        x = ERR
+        r = select.POLLIN | select.POLLPRI
+        w = select.POLLOUT
+        x = select.POLLERR
         o = 2 ** max([
             getattr(select, flag)
             for flag in dir(select)
@@ -304,6 +301,10 @@ if hasattr(select, 'poll') or hasattr(select, 'devpoll'):
             self.e.close()
             self.items.clear()
 
+    for _ in dir(select):
+        if _.startswith('POLL'):
+            setattr(_PPoller, _[4:], getattr(select, _))
+
     if hasattr(select, 'devpoll'):
         __all__.append('DevpollPoller')
         class DevpollPoller(_PPoller):
@@ -327,23 +328,9 @@ if hasattr(select, 'epoll'):
         """
         cls = select.epoll
         backend = 'epoll'
-        IN = select.EPOLLIN
-        OUT = select.EPOLLOUT
-        PRI = select.EPOLLPRI
-        ERR = select.EPOLLERR
-        HUP = select.EPOLLHUP
-        ET = select.EPOLLET
-        ONESHOT = select.EPOLLONESHOT
-        EXCLUSIVE = select.EPOLLEXCLUSIVE
-        RDHUP = select.EPOLLRDHUP
-        RDNORM = select.EPOLLRDNORM
-        RDBAND = select.EPOLLRDBAND
-        WRNORM = select.EPOLLWRNORM
-        WRBAND = select.EPOLLWRBAND
-        MSG = select.EPOLLMSG
-        r = IN|RDNORM|RDBAND
-        w = OUT|WRNORM|WRBAND
-        x = ERR
+        r = select.EPOLLIN | select.EPOLLRDNORM | select.EPOLLRDBAND
+        w = select.EPOLLOUT | select.EPOLLWRNORM | select.EPOLLWRBAND
+        x = select.EPOLLERR
         o = select.EPOLLONESHOT
         flags = dict(r=r, w=w, x=x, o=o)
         def __init__(self):
@@ -392,7 +379,9 @@ if hasattr(select, 'epoll'):
         def close(self):
             self.e.close()
             self.items.clear()
-
+    for _ in dir(select):
+        if _.startswith('EPOLL'):
+            setattr(EpollPoller, _[5:], getattr(select, _))
     Poller = EpollPoller
 
 try:
