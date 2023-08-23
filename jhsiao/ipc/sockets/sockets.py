@@ -98,6 +98,8 @@ def _connect_proxy(proxy, host, port, *args):
     """
     if not isinstance(proxy, str):
         proxy = os.environ.get('https_proxy', os.environ.get('http_proxy'))
+    if not proxy:
+        return connect_inet(host, port, *args)
     pproto, addr = proxy.split('://', 1)
     phost, pport = addr.rsplit(':', 1)
     sock = connect_inet(phost, int(pport), *args)

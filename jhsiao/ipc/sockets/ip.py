@@ -93,14 +93,22 @@ def default_ip(family='inet'):
 def get_ip(family='inet'):
     """Return a dict of interface and ip for address family.
 
-    Information is gathered via subprocess by using:
-        Linux:   ip, ifconfig
-        Windows: ipconfig
-        If cannot distinguish, then bind a udp broadcast socket
-        and return whatever ip is given.
-    for family, use:
-        IPv4:  "inet"
-        IPv6:  "inet6"
+
+    family: str: 'inet' | 'inet6'
+        The name of the address family to use.
+
+    Output:
+        {interfacename: [ip1, ip2, ip3,...],...}
+
+    Information is gathered via subprocess by parsing output from:
+        platform    commands
+        Linux:      ip, ifconfig
+        Windows:    ipconfig
+
+    A udp broadcast socket will also be bound and the corresponding
+    ip given under interface name "" (empty).
+
+    The dict may be empty if no ips were found.
     """
     ret = {}
     try:

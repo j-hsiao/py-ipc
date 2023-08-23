@@ -1,4 +1,6 @@
 """Read messages from multiple sockets in a single thread."""
+from __future__ import print_function
+
 __all__ = ['Reader']
 import threading
 import sys
@@ -34,7 +36,7 @@ else:
 
 class Reader(object):
     """Wrap a poller and read completed messages."""
-    def __init__(self, poller, exiter):
+    def __init__(self, poller, exiter, verbose=False):
         """Initialize a ListenReader.
 
         listener: The raw listening socket.
@@ -51,6 +53,7 @@ class Reader(object):
         self.q = []
         self.exiter = exiter
         self.thread = threading.Thread(target=self._run)
+        self.verbose = verbose
 
     def _predicate(self):
         return self.q
@@ -100,6 +103,8 @@ class Reader(object):
                         if amt is None:
                             poller.register(r, rearm)
                         elif amt < 0:
+                            if self.verbose:
+                                print('Closed fd {}'.format(r.fileno()), file=sys.stderr)
                             r.close()
                         else:
                             if amt > 0:

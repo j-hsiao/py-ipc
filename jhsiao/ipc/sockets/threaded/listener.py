@@ -28,6 +28,12 @@ class ListenerReader(object):
         self.timeout = timeout
         self.verbose = verbose
 
+    def __getattr__(self, name):
+        thing = getattr(self.listener, name)
+        if callable(thing):
+            setattr(self, name, thing)
+        return thing
+
     def readinto1(self, out):
         """Accept a single connection.
 
