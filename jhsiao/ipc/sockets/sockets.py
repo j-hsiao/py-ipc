@@ -206,13 +206,14 @@ if hasattr(socket, 'AF_UNIX'):
             fname = '\x00' + uuid.uuid4().hex
         s = socket.socket(socket.AF_UNIX, socktype)
         try:
-            util.set_cloexec(s, cloexec)
+            if cloexec:
+                util.set_cloexec(s, cloexec)
             s.bind(fname)
             s.settimeout(timeout)
         except Exception:
             s.close()
             raise
-        return Listener(s, cloexec, None, timeout)
+        return s
 
     def connect_unix(
         fname, cloexec=True, timeout=None,
@@ -220,7 +221,8 @@ if hasattr(socket, 'AF_UNIX'):
         """Return a connected unix socket."""
         s = socket.socket(socket.AF_UNIX, socktype)
         try:
-            util.set_cloexec(s, cloexec)
+            if cloexec:
+                util.set_cloexec(s, cloexec)
             s.settimeout(timeout)
             s.connect(fname)
         except Exception:
