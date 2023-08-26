@@ -7,9 +7,14 @@ import sys
 import traceback
 
 from jhsiao.ipc.sockets.formats import bases
+from .. import sockfile
 
 class ListenerReader(object):
-    """Wrap a listening socket to match reader interface."""
+    """Wrap a listening socket to match reader interface.
+
+    These can be registered to _RPollers to add new incoming connections
+    for read polling.
+    """
     def __init__(self, listener, verbose=False, timeout=0):
         """Initialize a ListenReader.
 
@@ -42,24 +47,15 @@ class ListenerReader(object):
         Always return None to indicate that it should continue
         to be polled.
         """
-        try:
-            s, a = self.listener.accept()
-            s.settimeout(self.timeout)
-            self.accept_connection(s)
-            if self.verbose:
-                print(
-                    'Accepted connection from', a,
-                    'fd', s.fileno(),
-                    file=sys.stderr)
-        except OSError as e:
-            if e.errno in bases.WOULDBLOCK:
-                return None
-        return None
-    readinto = readinto1
-
-    def read(self):
-        self.readinto1(None)
-        return []
+        s, a = self.listener.accept()
+        s.settimeout(self.timeout)
+        self.accept_connection(s)
+        if self.verbose:
+            print(
+                'Accepted connection from', a,
+                'fd', s.fileno(),
+                file=sys.stderr)
+        return -2
 
     def accept_connection(self, s):
         """Accept a connection.
@@ -75,7 +71,7 @@ class PollWrapListener(ListenerReader):
     """Wrap accepted connections and register with a poller."""
     def __init__(
         self, listener, poller, wrapcls,
-        mode='ro', verbose=False, timeout=0):
+        wrapmode='r', pollmode='ro', verbose=False, timeout=0):
         """Initialize a PollWrapListener.
 
         listener: A listening socket.
@@ -83,8 +79,11 @@ class PollWrapListener(ListenerReader):
         poller: A Poller from `jhsiao.ipc.polling`.
             The poller to register accepted connections with.
         wrapcls: callable
-            Wrap the accepted connections.
-        mode: str or int
+            Wrap the accepted connections.  Should expect a file-like
+            object (sockfile.Sockfile).
+        wrapmode: str
+            The mode to use for sockfile.Sockfile wrapping the socket.
+        pollmode: str or int
             The mode to use when registering connections.
         verbose: bool
             Verbose when accepting or error.
@@ -94,8 +93,11 @@ class PollWrapListener(ListenerReader):
         super(PollWrapListener, self).__init__(
             listener, verbose, timeout)
         self.poller = poller
-        self.mode = mode
+        self.pollmode = pollmode
+        self.wrapmode = wrapmode
         self.wrapcls = wrapcls
 
     def accept_connection(self, s):
-        self.poller.register(self.wrapcls(s), self.mode)
+        self.poller.register(
+            self.wrapcls(sockfile.Sockfile(s, self.wrapmode)),
+            self.pollmode)
