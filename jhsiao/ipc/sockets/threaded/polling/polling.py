@@ -26,6 +26,9 @@ Registered writable objects must support:
         None if would block  (start polling).
     __bool__()
         Tell whether there is more data to flush.
+
+NOTE: before items are closed, they should be unregistered from any pollers.
+Pollers do not check for invalid filenos.
 """
 __all__ = ['Poller', 'RPoller', 'WPoller', 'RWPoller']
 
@@ -50,12 +53,13 @@ class RPoller(Poller):
         """Mode will be ignored, only read polling supported."""
         raise NotImplementedError
 
-    def poll(self, out, r):
+    def poll(self, out, r, bad):
         """Poll objects and readinto1() on readers.
 
         No timeout if r is empty else 0.
-        Return list of updated readers.
-        Any messages that were parsed will be added to out.
+        r will be updated with readers that have not blocked (may have
+        more data to read).
+        Bad items are added to bad (disconnected or error.)
         """
         raise NotImplementedError
 
@@ -69,21 +73,23 @@ class WPoller(Poller):
         """
         raise NotImplementedError
 
-    def poll(self, out, w):
+    def poll(self, out, w, bad):
         """Poll objects and flush1() on writers.
 
         No timeout if w is empty else 0.
-        Return updated list of items that have data to write and can
-        write.
+        w will be updated with writers that have not blocked and have
+        more data towrite.
+        Bad items are added to bad (disconnected or error.)
         """
         raise NotImplementedError
 
 class RWPoller(Poller):
     """Combine read and write polling."""
-    def poll(self, out, r, w):
+    def poll(self, out, r, w, bad):
         """Poll objects for read and write.
 
         Combine behavior of RPoller and WPoller.
-        Return updated readers and writers lists.
+        r and w will be updated as with RPoller/WPoller.
+        Bad items are added to bad (disconnected or error.)
         """
         pass

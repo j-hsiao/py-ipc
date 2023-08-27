@@ -10,54 +10,35 @@ import sys
 from . import polling
 
 class RSelectPoller(polling.RPoller):
-    def __init__(self, verbose=False):
+    def __init__(self):
         self.r = set()
-        self.verbose = verbose
         self.unregister = self.r.discard
 
     def register(self, item, mode):
         self.r.add(item)
 
-    def poll(self, out, r):
+    def poll(self, out, r, bad):
         extra = select.select(self.r, (), (), 0 if r else None)[0]
         if extra:
             self.r.difference_update(extra)
             r.extend(extra)
-        kp = []
+        i = 0
         for item in r:
             result = item.readinto1(out)
             if result is None or result == -2:
                 self.r.add(item)
             elif result == -1:
-                fd = item.fileno()
-                try:
-                    item.close()
-                except Exception as e:
-                    if self.verbose:
-                        print(
-                            '{} errored: {}'.format(fd, e),
-                            file=sys.stderr)
-                else:
-                    if self.verbose:
-                        print(
-                            '{} Disconnected'.format(fd),
-                            file=sys.stderr)
+                bad.append(item)
             else:
-                kp.append(item)
-        return kp
+                r[i] = item
+                i += 1
+        del r[i:]
 
-class WSelectPoller(polling.WPoller):
-    """Use select to poll for writes."""
-    # On Windows, if a socket is closed mid-select() for write,
-    # select will unblock, but return no items at all.  The bad fd
-    # must be searched for via iteration.
-    # A closed fd will be polled as available for read, but
-    # available for read doesn't necessarily mean that the socket
-    # was closed.
-    def __init__(self, interrupt, verbose=False):
+class _RW(object):
+    def __init__(self):
+        super(_RW, self).__init__()
         self.r = set()
         self.w = set()
-        self.verbose = verbose
 
     def unregister(self, item):
         self.r.discard(item)
@@ -73,44 +54,62 @@ class WSelectPoller(polling.WPoller):
         else:
             self.w.discard(item)
 
-    def poll(self, out, w):
+class WSelectPoller(_RW, polling.WPoller):
+    """Use select to poll for writes."""
+    def poll(self, out, w, bad):
         r, extra, _ = select.select(
             self.r, self.w, (), 0 if w else None)
+        if r:
+            for item in r:
+                item.readinto1(None)
         if extra:
             self.w.difference_update(extra)
             w.extend(extra)
-        if r:
-            for item in r:
-                r.readinto1(None)
-        if extra:
-            self.w.difference_update(extra)
-            for item in extra:
-                if item is self.interrupt:
-                    item.read(1)
-                    self.r.add(item)
-                else:
-                    self.r.discard(item)
-                    item.close()
-        kp = []
+        i = 0
         for item in w:
-            result = item.flush1(out)
+            result = item.flush1()
             if result is None:
                 self.w.add(item)
             elif result < 0:
-                fd = item.fileno()
-                try:
-                    item.close()
-                except Exception as e:
-                    if self.verbose:
-                        print(
-                            '{} errored: {}'.format(fd, e),
-                            file=sys.stderr)
-                else:
-                    if self.verbose:
-                        print(
-                            '{} Disconnected'.format(fd),
-                            file=sys.stderr)
+                bad.append(item)
             else:
                 if item:
-                    kp.append(item)
-        return kp
+                    w[i] = item
+                    i += 1
+        del w[i:]
+
+class RWSelectPoller(_RW, polling.RWPoller):
+    """Use select to poll for simultaneous read/write polling."""
+    def poll(self, out, r, w, bad):
+        er, ew, _ = select.select(
+            self.r, self.w, (), 0 if r or w else None)
+        if er:
+            r.extend(er)
+            self.r.difference_update(er)
+        if ew:
+            w.extend(ew)
+            self.w.difference_update(ew)
+
+        i = 0
+        for item in r:
+            result = item.readinto1(out)
+            if result is None or result == -2:
+                self.r.add(item)
+            elif result == -1:
+                bad.append(item)
+            else:
+                r[i] = item
+                i += 1
+        del r[i:]
+        i = 0
+        for item in w:
+            result = item.flush1()
+            if result is None:
+                self.w.add(item)
+            elif result < 0:
+                bad.append(item)
+            else:
+                if item:
+                    w[i] = item
+                    i += 1
+        del w[i:]

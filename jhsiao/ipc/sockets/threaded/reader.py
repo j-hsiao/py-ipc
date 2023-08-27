@@ -5,7 +5,9 @@ __all__ = ['Reader']
 import threading
 import sys
 
-if sys.version_info.major > 2:
+from ..formats import bases
+
+if sys.version_info > (3,4):
     _wait_for_cond = threading.Condition.wait_for
 else:
     import time
@@ -14,39 +16,35 @@ else:
 
         Assume cond is held before this is called.
         """
-        if pred():
-            return True
-        if timeout is None:
+        result = pred()
+        if result or timeout == 0:
+            return result
+        elif timeout is None:
             while not pred():
                 cond.wait(None)
             return True
-        elif timeout == 0:
-            return False
         else:
             end = time.time() + timeout
             cond.wait(timeout)
-            now = time.time()
             while not pred():
+                now = time.time()
                 if now < end:
-                    cond.wait(end - now)
-                    now = time.time()
+                    try:
+                        cond.wait(end - now)
+                    except EnvironmentError as e:
+                        if e.errno != bases.EINTR:
+                            raise
                 else:
                     return False
             return True
 
 class Reader(object):
     """Wrap a poller and read completed messages."""
-    def __init__(self, poller, exiter, verbose=False):
+    def __init__(self, poller, verbose=False):
         """Initialize a ListenReader.
 
         listener: The raw listening socket.
-        poller: A `jhsiao.ipc.polling` Poller
-            Assume poller only has items registered as 'ro' or
-            equivalent.  Items should also be in non-blocking mode.
-        exiter: obj with fileno()
-            This should already be registered with poller.
-            When it becomes readable, it indicates that the thread
-            should stop.
+        poller: A `jhsiao.ipc.sockets.threaded.polling` RPoller
         """
         self.poller = poller
         self.cond = threading.Condition()
