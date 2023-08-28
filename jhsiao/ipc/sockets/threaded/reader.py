@@ -7,6 +7,9 @@ import sys
 
 from ..formats import bases
 
+from . import polling
+from .polling import control
+
 if sys.version_info > (3,4):
     _wait_for_cond = threading.Condition.wait_for
 else:
@@ -39,19 +42,31 @@ else:
             return True
 
 class Reader(object):
-    """Wrap a poller and read completed messages."""
-    def __init__(self, poller, verbose=False):
+    """Most basic read polling."""
+
+    class Control(control.RWPair):
+        def __init__(self, reader):
+            super(Control, self).__init__()
+            self.reader = reader
+
+        def readinto1(self, out):
+            del self.reader.running[:]
+            return -2
+
+    def __init__(self, poller, verbose=False, daemon=False):
         """Initialize a ListenReader.
 
-        listener: The raw listening socket.
         poller: A `jhsiao.ipc.sockets.threaded.polling` RPoller
         """
         self.poller = poller
+        self._ctrl = self.Control(self)
+        self.poller.register(self._ctrl, 'r')
+        self.verbose = verbose
         self.cond = threading.Condition()
         self.q = []
-        self.exiter = exiter
+        self.running = [1]
         self.thread = threading.Thread(target=self._run)
-        self.verbose = verbose
+        self.thread.daemon = daemon
 
     def _predicate(self):
         return self.q
@@ -70,44 +85,52 @@ class Reader(object):
     def start(self):
         self.thread.start()
 
-    def join(self):
-        self.thread.join()
+    def stop(self, closeitems=True):
+        """Stop the thread.
+
+        Any registered items will be stored in self.items attr.
+        """
+        if self.thread is not None:
+            self._ctrl.set()
+            self.thread.join()
+            self._ctrl.close()
+            self.thread = None
+            if closeitems:
+                for item in self.items:
+                    item.close()
 
     def _run(self):
-        """Continually poll for new data.
-
-        When messages are completed, add to self.q
-        """
-        exiter = self.exiter
+        """Poll and read in new data to self.q."""
         reading = []
         poller = self.poller
-        rearm = poller.r | poller.o
         cond = self.cond
-        isselect = poller.backend == 'select'
-        while 1:
-            if isselect:
-                reading.extend(poller.poll(0 if reading else None)[0])
-            else:
-                reading.extend(poller.anypoll(0 if reading else None))
-            if reading:
-                nreading = []
-                with cond:
-                    q = self.q
-                    notify = False
-                    for r in reading:
-                        if r is exiter:
-                            return
-                        amt = r.readinto1(q)
-                        if amt is None:
-                            poller.register(r, rearm)
-                        elif amt < 0:
-                            if self.verbose:
-                                print('Closed fd {}'.format(r.fileno()), file=sys.stderr)
-                            r.close()
-                        else:
-                            if amt > 0:
-                                notify = True
-                            nreading.append(r)
-                    if notify:
-                        cond.notify()
-                reading = nreading
+        bad = []
+        running = self.running
+        try:
+            while running:
+                result = poller.poll(0) if reading else poller.poll()
+                with self.cond:
+                    L1 = len(self.q)
+                    poller.fill(result, reading, self.q, bad)
+                    if len(self.q) != L1:
+                        self.cond.notify()
+                if bad:
+                    for item in bad:
+                        if self.verbose:
+                            print('Closed fd {}'.format(r.fileno()), file=sys.stderr)
+                        item.close()
+        finally:
+            self.items = [item for item in poller if item is not self._ctrl]
+            self.poller.close()
+
+class SocketListener(Reader):
+    def __init__(self, addr=None, sock=None):
+        """Initialize SocketListener.
+
+        addr: address to connect to.
+        sock: the socket to use.
+
+        If sock is given, then use it.
+        Otherwise, bind to addr.
+        """
+        pass

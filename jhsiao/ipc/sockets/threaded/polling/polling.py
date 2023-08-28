@@ -40,11 +40,19 @@ class Poller(object):
     poll.  This will generally be done by some item that has been
     registered for read polling.
     """
-    def unregister(self, item):
+    def __iter__(self):
         raise NotImplementedError
-    def register(self, item, mode):
+    def unregister(self, item):
+        """Unregister an item."""
+        raise NotImplementedError
+    def poll(self, timeout):
+        """Poll objects."""
         raise NotImplementedError
     def close(self):
+        """Close the poller.
+
+        Any registered items are left alone.
+        """
         pass
 
 class RPoller(Poller):
@@ -53,13 +61,13 @@ class RPoller(Poller):
         """Mode will be ignored, only read polling supported."""
         raise NotImplementedError
 
-    def poll(self, out, r, bad):
-        """Poll objects and readinto1() on readers.
+    def fill(self, result, r, out, bad):
+        """Read a little data from each item.
 
-        No timeout if r is empty else 0.
-        r will be updated with readers that have not blocked (may have
-        more data to read).
-        Bad items are added to bad (disconnected or error.)
+        result: poll output
+        r: list of readers
+        out: output container
+        bad: list of bad items.
         """
         raise NotImplementedError
 
@@ -73,10 +81,10 @@ class WPoller(Poller):
         """
         raise NotImplementedError
 
-    def poll(self, out, w, bad):
-        """Poll objects and flush1() on writers.
 
-        No timeout if w is empty else 0.
+    def fill(self, result, w, bad):
+        """Call flush1() on writers.
+
         w will be updated with writers that have not blocked and have
         more data towrite.
         Bad items are added to bad (disconnected or error.)
@@ -85,11 +93,6 @@ class WPoller(Poller):
 
 class RWPoller(Poller):
     """Combine read and write polling."""
-    def poll(self, out, r, w, bad):
-        """Poll objects for read and write.
-
-        Combine behavior of RPoller and WPoller.
-        r and w will be updated as with RPoller/WPoller.
-        Bad items are added to bad (disconnected or error.)
-        """
-        pass
+    def fill(self, result, r, w, out, bad):
+        """Like WPoller.fill() and RPoller.fill()."""
+        raise NotImplementedError

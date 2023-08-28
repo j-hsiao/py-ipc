@@ -14,14 +14,19 @@ class RSelectPoller(polling.RPoller):
         self.r = set()
         self.unregister = self.r.discard
 
+    def __iter__(self):
+        return iter(self.r)
+
     def register(self, item, mode):
         self.r.add(item)
 
-    def poll(self, out, r, bad):
-        extra = select.select(self.r, (), (), 0 if r else None)[0]
-        if extra:
-            self.r.difference_update(extra)
-            r.extend(extra)
+    def poll(self, timeout=None):
+        return select.select(self.r, (), (), timeout)[0]
+
+    def fill(self, result, r, out, bad):
+        if result:
+            self.r.difference_update(result)
+            r.extend(result)
         i = 0
         for item in r:
             result = item.readinto1(out)
@@ -35,10 +40,14 @@ class RSelectPoller(polling.RPoller):
         del r[i:]
 
 class _RW(object):
+    """Base class with r and w set attrs."""
     def __init__(self):
         super(_RW, self).__init__()
         self.r = set()
         self.w = set()
+
+    def __iter__(self):
+        return iter(self.r.union(self.w))
 
     def unregister(self, item):
         self.r.discard(item)
@@ -54,11 +63,13 @@ class _RW(object):
         else:
             self.w.discard(item)
 
+    def poll(self, timeout=None):
+        return select.select(self.r, self.w, (), timeout)
+
 class WSelectPoller(_RW, polling.WPoller):
     """Use select to poll for writes."""
-    def poll(self, out, w, bad):
-        r, extra, _ = select.select(
-            self.r, self.w, (), 0 if w else None)
+    def fill(self, result, w, bad):
+        r, extra, _ = result
         if r:
             for item in r:
                 item.readinto1(None)
@@ -78,18 +89,17 @@ class WSelectPoller(_RW, polling.WPoller):
                     i += 1
         del w[i:]
 
+
 class RWSelectPoller(_RW, polling.RWPoller):
     """Use select to poll for simultaneous read/write polling."""
-    def poll(self, out, r, w, bad):
-        er, ew, _ = select.select(
-            self.r, self.w, (), 0 if r or w else None)
+    def fill(self, result, r, w, out, bad):
+        er, ew, _ = result
         if er:
             r.extend(er)
             self.r.difference_update(er)
         if ew:
             w.extend(ew)
             self.w.difference_update(ew)
-
         i = 0
         for item in r:
             result = item.readinto1(out)
