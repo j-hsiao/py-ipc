@@ -9,7 +9,13 @@ import sys
 
 from . import polling
 
-class RSelectPoller(polling.RPoller):
+class SelectPoller(object):
+    self.r = 1
+    self.w = 2
+    self.rw = 3
+
+
+class RSelectPoller(SelectPoller, polling.RPoller):
     def __init__(self):
         self.r = set()
         self.unregister = self.r.discard
@@ -17,8 +23,11 @@ class RSelectPoller(polling.RPoller):
     def __iter__(self):
         return iter(self.r)
 
-    def register(self, item, mode):
+    def __setitem__(self, item, mode):
         self.r.add(item)
+
+    def unregister(self, item):
+        self.r.discard(item)
 
     def poll(self, timeout=None):
         return select.select(self.r, (), (), timeout)[0]
@@ -39,7 +48,7 @@ class RSelectPoller(polling.RPoller):
                 i += 1
         del r[i:]
 
-class _RW(object):
+class _RW(SelectPoller):
     """Base class with r and w set attrs."""
     def __init__(self):
         super(_RW, self).__init__()
@@ -49,19 +58,22 @@ class _RW(object):
     def __iter__(self):
         return iter(self.r.union(self.w))
 
-    def unregister(self, item):
+    def __delitem__(self, item):
         self.r.discard(item)
         self.w.discard(item)
 
-    def register(self, item, mode):
-        if 'r' in mode:
+    def __setitem__(self, item, mode):
+        if mode == self.r:
             self.r.add(item)
-        else:
+            self.w.discard(item)
+        elif mode == self.w:
             self.r.discard(item)
-        if 'w' in mode:
+            self.w.add(item)
+        elif mode == self.rw:
+            self.r.add(item)
             self.w.add(item)
         else:
-            self.w.discard(item)
+            raise ValueError('Bad mode: {}'.format(mode))
 
     def poll(self, timeout=None):
         return select.select(self.r, self.w, (), timeout)

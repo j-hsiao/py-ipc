@@ -2,9 +2,7 @@ import select
 __all__ = ['RPoller', 'WPoller', 'RWPoller']
 if hasattr(select, 'select'):
     from .select import *
-if hasattr(select, 'devpoll'):
-    from .devpoll import *
-if hasattr(select, 'poll'):
+if hasattr(select, 'devpoll') or hasattr(select, 'poll'):
     from .poll import *
 if hasattr(select, 'epoll'):
     from .epoll import *

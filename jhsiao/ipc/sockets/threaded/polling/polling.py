@@ -42,9 +42,20 @@ class Poller(object):
     """
     def __iter__(self):
         raise NotImplementedError
+    def __delitem__(self, item):
+        """Call unregister."""
+        self.unregister(item)
+    def __setitem__(self, item, mode):
+        """Call register."""
+        self.register(item, mode)
+
     def unregister(self, item):
         """Unregister an item."""
-        raise NotImplementedError
+        del self[item]
+    def register(self, item, mode):
+        """Register item under mode."""
+        self[item] = mode
+
     def poll(self, timeout):
         """Poll objects."""
         raise NotImplementedError
@@ -74,13 +85,13 @@ class RPoller(Poller):
 class WPoller(Poller):
     """Write polling object."""
     def register(self, item, mode):
-        """Mode will be ignored, only write polling supported.
+        """Register item as mode
 
+        Assume no rw items.
         All items registered with read are assumed to return -2 on
-        readinto1() and the input argument should be unused.
+        readinto1() and its argument should be unused.
         """
         raise NotImplementedError
-
 
     def fill(self, result, w, bad):
         """Call flush1() on writers.
@@ -93,6 +104,7 @@ class WPoller(Poller):
 
 class RWPoller(Poller):
     """Combine read and write polling."""
+
     def fill(self, result, r, w, out, bad):
         """Like WPoller.fill() and RPoller.fill()."""
         raise NotImplementedError
