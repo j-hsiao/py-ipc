@@ -9,6 +9,7 @@ class PPoller(object):
     r = select.POLLIN | select.POLLPRI
     w = select.POLLOUT
     rw = r | w
+    s = r
     def __init__(self):
         self.items = {}
         self.poller = self.cls()
@@ -18,12 +19,12 @@ class PPoller(object):
         return iter(self.items.values())
 
     def __delitem__(self, item):
-        fd = self.fileno()
-        self.items.pop(fd, None)
-        self.poller.unregister(fd)
+        fd = item.fileno()
+        if self.items.pop(fd, None) is not None:
+            self.poller.unregister(fd)
 
     def __setitem__(self, item, mode):
-        fd = self.fileno()
+        fd = item.fileno()
         self.poller.register(fd, mode)
         self.items[fd] = item
 

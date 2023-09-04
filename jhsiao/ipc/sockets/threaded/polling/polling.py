@@ -39,12 +39,24 @@ class Poller(object):
     As a result, adding new items to poll must interrupt any current
     poll.  This will generally be done by some item that has been
     registered for read polling.
+
+    Poller subclasses should define attributes:
+        r: register for read polling
+        w: register for write polling
+        rw: register for read and write polling
+        s: register for special control
+            (readinto1() should return -2)
+            readinto1() returning -2 implies the object was registered
+            with s.
     """
     def __iter__(self):
+        """Iterate on registered items."""
         raise NotImplementedError
+
     def __delitem__(self, item):
         """Call unregister."""
         self.unregister(item)
+
     def __setitem__(self, item, mode):
         """Call register."""
         self.register(item, mode)
@@ -52,13 +64,21 @@ class Poller(object):
     def unregister(self, item):
         """Unregister an item."""
         del self[item]
+
     def register(self, item, mode):
-        """Register item under mode."""
+        """Register item under mode.
+
+        Re-register to change mode.
+        """
         self[item] = mode
 
     def poll(self, timeout):
-        """Poll objects."""
+        """Poll objects and return backend-specific object.
+
+        No arg means no timeout.
+        """
         raise NotImplementedError
+
     def close(self):
         """Close the poller.
 
@@ -67,15 +87,15 @@ class Poller(object):
         pass
 
 class RPoller(Poller):
-    """Read polling object."""
-    def register(self, item, mode):
-        """Mode will be ignored, only read polling supported."""
-        raise NotImplementedError
+    """Poll for reads.
 
-    def fill(self, result, r, out, bad):
+    When registering items, read flag is always added and write flag is
+    always ignored.
+    """
+    def fill(self, pollout, r, out, bad):
         """Read a little data from each item.
 
-        result: poll output
+        pollout: poll output
         r: list of readers
         out: output container
         bad: list of bad items.
@@ -84,16 +104,7 @@ class RPoller(Poller):
 
 class WPoller(Poller):
     """Write polling object."""
-    def register(self, item, mode):
-        """Register item as mode
-
-        Assume no rw items.
-        All items registered with read are assumed to return -2 on
-        readinto1() and its argument should be unused.
-        """
-        raise NotImplementedError
-
-    def fill(self, result, w, bad):
+    def fill(self, pollout, w, bad):
         """Call flush1() on writers.
 
         w will be updated with writers that have not blocked and have
@@ -104,7 +115,6 @@ class WPoller(Poller):
 
 class RWPoller(Poller):
     """Combine read and write polling."""
-
-    def fill(self, result, r, w, out, bad):
+    def fill(self, pollout, r, w, out, bad):
         """Like WPoller.fill() and RPoller.fill()."""
         raise NotImplementedError

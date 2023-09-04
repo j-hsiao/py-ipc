@@ -10,37 +10,38 @@ import sys
 from . import polling
 
 class SelectPoller(object):
-    self.r = 1
-    self.w = 2
-    self.rw = 3
-
+    r = 1
+    w = 2
+    rw = 3
+    s = r
 
 class RSelectPoller(SelectPoller, polling.RPoller):
     def __init__(self):
-        self.r = set()
-        self.unregister = self.r.discard
+        super(RSelectPoller, self).__init__()
+        self.items = set()
+        self.unregister = self.items.discard
 
     def __iter__(self):
-        return iter(self.r)
+        return iter(self.items)
 
     def __setitem__(self, item, mode):
-        self.r.add(item)
+        self.items.add(item)
 
     def unregister(self, item):
-        self.r.discard(item)
+        self.items.discard(item)
 
     def poll(self, timeout=None):
-        return select.select(self.r, (), (), timeout)[0]
+        return select.select(self.items, (), (), timeout)[0]
 
-    def fill(self, result, r, out, bad):
-        if result:
-            self.r.difference_update(result)
-            r.extend(result)
+    def fill(self, pollout, r, out, bad):
+        if pollout:
+            self.items.difference_update(pollout)
+            r.extend(pollout)
         i = 0
         for item in r:
             result = item.readinto1(out)
             if result is None or result == -2:
-                self.r.add(item)
+                self.items.add(item)
             elif result == -1:
                 bad.append(item)
             else:
@@ -49,50 +50,50 @@ class RSelectPoller(SelectPoller, polling.RPoller):
         del r[i:]
 
 class _RW(SelectPoller):
-    """Base class with r and w set attrs."""
+    """Base class with _r and _w set attrs."""
     def __init__(self):
         super(_RW, self).__init__()
-        self.r = set()
-        self.w = set()
+        self._r = set()
+        self._w = set()
 
     def __iter__(self):
-        return iter(self.r.union(self.w))
+        return iter(self._r.union(self._w))
 
     def __delitem__(self, item):
-        self.r.discard(item)
-        self.w.discard(item)
+        self._r.discard(item)
+        self._w.discard(item)
 
     def __setitem__(self, item, mode):
-        if mode == self.r:
-            self.r.add(item)
-            self.w.discard(item)
-        elif mode == self.w:
-            self.r.discard(item)
-            self.w.add(item)
-        elif mode == self.rw:
-            self.r.add(item)
-            self.w.add(item)
+        if mode == self._r:
+            self._r.add(item)
+            self._w.discard(item)
+        elif mode == self._w:
+            self._r.discard(item)
+            self._w.add(item)
+        elif mode == self._rw:
+            self._r.add(item)
+            self._w.add(item)
         else:
             raise ValueError('Bad mode: {}'.format(mode))
 
     def poll(self, timeout=None):
-        return select.select(self.r, self.w, (), timeout)
+        return select.select(self._r, self._w, (), timeout)
 
 class WSelectPoller(_RW, polling.WPoller):
     """Use select to poll for writes."""
-    def fill(self, result, w, bad):
-        r, extra, _ = result
-        if r:
-            for item in r:
+    def fill(self, pollout, w, bad):
+        rpoll, wpoll, _ = pollout
+        if rpoll:
+            for item in rpoll:
                 item.readinto1(None)
-        if extra:
-            self.w.difference_update(extra)
-            w.extend(extra)
+        if wpoll:
+            self._w.difference_update(wpoll)
+            w.extend(wpoll)
         i = 0
         for item in w:
             result = item.flush1()
             if result is None:
-                self.w.add(item)
+                self._w.add(item)
             elif result < 0:
                 bad.append(item)
             else:
@@ -104,19 +105,19 @@ class WSelectPoller(_RW, polling.WPoller):
 
 class RWSelectPoller(_RW, polling.RWPoller):
     """Use select to poll for simultaneous read/write polling."""
-    def fill(self, result, r, w, out, bad):
-        er, ew, _ = result
-        if er:
-            r.extend(er)
-            self.r.difference_update(er)
-        if ew:
-            w.extend(ew)
-            self.w.difference_update(ew)
+    def fill(self, pollout, r, w, out, bad):
+        rpoll, wpoll, _ = pollout
+        if rpoll:
+            r.extend(rpoll)
+            self._r.difference_update(rpoll)
+        if wpoll:
+            w.extend(wpoll)
+            self._w.difference_update(wpoll)
         i = 0
         for item in r:
             result = item.readinto1(out)
             if result is None or result == -2:
-                self.r.add(item)
+                self._r.add(item)
             elif result == -1:
                 bad.append(item)
             else:
@@ -127,7 +128,7 @@ class RWSelectPoller(_RW, polling.RWPoller):
         for item in w:
             result = item.flush1()
             if result is None:
-                self.w.add(item)
+                self._w.add(item)
             elif result < 0:
                 bad.append(item)
             else:
