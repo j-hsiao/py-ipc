@@ -20,7 +20,7 @@ class PPoller(object):
 
     def __delitem__(self, item):
         fd = item.fileno()
-        if self.items.pop(fd, None) is not None:
+        if self.items.pop(fd, (0,0))[1]:
             self.poller.unregister(fd)
 
     def __setitem__(self, item, mode):
@@ -48,7 +48,7 @@ class RPPoller(PPoller, polling.RPoller):
                 self.poller.register(item.fileno(), self.r)
             elif result == -1:
                 bad.append(item)
-                del self[item]
+                self.items.pop(item.fileno(), None)
             else:
                 r[i] = item
                 i += 1
@@ -59,7 +59,7 @@ class RPPoller(PPoller, polling.RPoller):
             if result == -1:
                 bad.append(item)
                 self.poller.unregister(fd)
-                del self.items[fd]
+                self.items.pop(fd, None)
             elif result is not None and result != -2:
                 r.append(item)
                 self.poller.unregister(fd)
@@ -74,11 +74,13 @@ class WPPoller(PPoller, polling.WPoller):
                 self.poller.register(item.fileno(), self.w)
             elif result < 0:
                 bad.append(item)
-                del self[item]
+                self.items.pop(item.fileno(), None)
             else:
                 if item:
                     w[i] = item
                     i += 1
+                else:
+                    self.items.pop(item.fileno(), None)
         del w[i:]
         for fd, m in result:
             if m & self.r:
@@ -90,18 +92,29 @@ class WPPoller(PPoller, polling.WPoller):
                     if result < 0:
                         bad.append(item)
                         self.poller.unregister(fd)
-                        del self.items[fd]
+                        self.items.pop(fd, None)
                     else:
                         self.poller.unregister(fd)
-                        del self.items[fd]
                         if item:
                             w.append(item)
+                        else:
+                            self.items.pop(item.fileno(), None)
 
 class RWPPoller(PPoller, polling.RWPoller):
+    def __iter__(self):
+        for item, mode in self.items.values():
+            yield item
+
     def __setitem__(self, item, mode):
+        # need to track read/write polling independently.
         fd = item.fileno()
         self.poller.register(fd, mode)
         self.items[fd] = [item, mode]
+
+    def __delitem__(self, item):
+        fd = item.fileno()
+        if self.items.pop(fd, (0,0))[1]:
+            self.poller.unregister(fd)
 
     def fill(self, result, r, w, out, bad):
         i = 0
@@ -109,7 +122,9 @@ class RWPPoller(PPoller, polling.RWPoller):
             result = item.readinto1(out)
             if result is None:
                 fd = item.fileno()
-                pair = self.items.get(fd)
+                pair = self.items.get(fd, None)
+                if pair is None:
+                    pair = self.items[fd] = [item, 0]
                 if pair[1]:
                     self.poller.modify(fd, self.rw)
                     pair[1] = self.rw
@@ -118,10 +133,7 @@ class RWPPoller(PPoller, polling.RWPoller):
                     pair[1] = self.r
             elif result == -1:
                 bad.append(item)
-                fd = item.fileno()
-                pair = self.items.pop(fd, None)
-                if pair and pair[1]:
-                    self.poller.unregister(fd)
+                del self[item]
             else:
                 r[i] = item
                 i += 1
@@ -142,11 +154,16 @@ class RWPPoller(PPoller, polling.RWPoller):
                     pair[1] = self.w
             elif result < 0:
                 bad.append(item)
+                del self[item]
+            elif item:
+                w[i] = item
+                i += 1
             else:
-                if item:
-                    w[i] = item
-                    i += 1
+                fd = item.fileno()
+                if not self.items.get(fd, (0,0))[1]:
+                    del self.items[fd]
         del w[i:]
+        # TODO handle newly polled objects
         for fd, m in result:
             item = self.items[fd]
             if m & self.r:
