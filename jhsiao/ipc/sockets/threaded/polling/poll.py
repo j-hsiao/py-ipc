@@ -1,15 +1,36 @@
+# The bits returned in revents can include any of those specified in
+# events, or one of the values POLLERR, POLLHUP, or POLLNVAL.  (These
+# three bits are meaningless in the events field, and will be set in the
+# revents field whenever the corresponding condition is true.)
+#
+# TODO considerations:
+# 1. suppose polling gives HUP/ERR/NVAL, want to unregister it from
+# poller (otherwise it'll keep getting polled)
+# BUT. if it was already being processed in r/w?
+# if w: would write->error?
+# if r: would read->error?
+# maybe no extra processing needed
+# would unregister but already checked if need to unregister from poller
+# so safe
+#
+# for writer, get item into w somehow
+# and also register somehow?
+#
+# but if register via read signal, can it be guaranteed to be
+# registered before the write is handled?
+#
+#
 __all__ = ['RPoller', 'WPoller', 'RWPoller']
 import select
 
 from . import polling
 
-polling.RPoller
-
 class PPoller(object):
-    r = select.POLLIN | select.POLLPRI
+    r = select.POLLIN
     w = select.POLLOUT
     rw = r | w
     s = r
+    bad = select.POLLHUP | select.POLLERR | select.POLLNVAL
     def __init__(self):
         self.items = {}
         self.poller = self.cls()
@@ -20,7 +41,7 @@ class PPoller(object):
 
     def __delitem__(self, item):
         fd = item.fileno()
-        if self.items.pop(fd, (0,0))[1]:
+        if self.items.pop(fd, None) is not None:
             self.poller.unregister(fd)
 
     def __setitem__(self, item, mode):
@@ -32,7 +53,9 @@ class PPoller(object):
         return self.poller.poll(timeout)
 
     def close(self):
-        self.poller.close()
+        close = getattr(self.poller, 'close')
+        if close is not None:
+            close()
 
 
 class RPPoller(PPoller, polling.RPoller):
@@ -45,10 +68,10 @@ class RPPoller(PPoller, polling.RPoller):
         for item in r:
             result = item.readinto1(out)
             if result is None:
-                self.poller.register(item.fileno(), self.r)
+                self.poller.modify(item.fileno(), self.r)
             elif result == -1:
                 bad.append(item)
-                self.items.pop(item.fileno(), None)
+                del self[item]
             else:
                 r[i] = item
                 i += 1
@@ -58,12 +81,13 @@ class RPPoller(PPoller, polling.RPoller):
             result = item.readinto1(out)
             if result == -1:
                 bad.append(item)
-                self.poller.unregister(fd)
-                self.items.pop(fd, None)
+                del self[item]
             elif result is not None and result != -2:
                 r.append(item)
-                self.poller.unregister(fd)
-
+                if m & self.bad:
+                    del self[item]
+                else:
+                    self.poller.modify(fd, 0)
 
 class WPPoller(PPoller, polling.WPoller):
     def fill(self, result, w, bad):
@@ -71,19 +95,25 @@ class WPPoller(PPoller, polling.WPoller):
         for item in w:
             result = item.flush1()
             if result is None:
-                self.poller.register(item.fileno(), self.w)
+                fd = item.fileno()
+                if self.items.get(fd) is None:
+                    self.items[fd] = item
+                    self.poller.register(fd, self.w)
+                else:
+                    self.poller.modify(fd, self.w)
             elif result < 0:
                 bad.append(item)
-                self.items.pop(item.fileno(), None)
+                del self[item]
             else:
                 if item:
                     w[i] = item
                     i += 1
-                else:
-                    self.items.pop(item.fileno(), None)
         del w[i:]
         for fd, m in result:
-            if m & self.r:
+            if m & self.bad:
+                bad.append(item)
+                del self[item]
+            elif m & self.r:
                 self.items[fd].readinto1(None)
             else:
                 item = self.items[fd]
@@ -91,14 +121,11 @@ class WPPoller(PPoller, polling.WPoller):
                 if result is not None:
                     if result < 0:
                         bad.append(item)
-                        self.poller.unregister(fd)
-                        self.items.pop(fd, None)
+                        del self[item]
                     else:
-                        self.poller.unregister(fd)
+                        self.poller.modify(fd, 0)
                         if item:
                             w.append(item)
-                        else:
-                            self.items.pop(item.fileno(), None)
 
 class RWPPoller(PPoller, polling.RWPoller):
     def __iter__(self):
@@ -106,7 +133,6 @@ class RWPPoller(PPoller, polling.RWPoller):
             yield item
 
     def __setitem__(self, item, mode):
-        # need to track read/write polling independently.
         fd = item.fileno()
         self.poller.register(fd, mode)
         self.items[fd] = [item, mode]
@@ -122,7 +148,7 @@ class RWPPoller(PPoller, polling.RWPoller):
             result = item.readinto1(out)
             if result is None:
                 fd = item.fileno()
-                pair = self.items.get(fd, None)
+                self.items[fd]
                 if pair is None:
                     pair = self.items[fd] = [item, 0]
                 if pair[1]:
