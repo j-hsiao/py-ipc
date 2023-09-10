@@ -13,13 +13,16 @@
 # would unregister but already checked if need to unregister from poller
 # so safe
 #
+# thought: handling hup/err/nval separately might not be necessary
+# since trying to read/write if it was in error state should result
+# in error and removing it/adding to bad anyways.
+#
 # for writer, get item into w somehow
 # and also register somehow?
 #
 # but if register via read signal, can it be guaranteed to be
-# registered before the write is handled?
-#
-#
+# registered before the write is handled?: add to w and register via the
+# read signal, means w is never unregistered
 __all__ = ['RPoller', 'WPoller', 'RWPoller']
 import select
 
@@ -84,10 +87,7 @@ class RPPoller(PPoller, polling.RPoller):
                 del self[item]
             elif result is not None and result != -2:
                 r.append(item)
-                if m & self.bad:
-                    del self[item]
-                else:
-                    self.poller.modify(fd, 0)
+                self.poller.modify(fd, 0)
 
 class WPPoller(PPoller, polling.WPoller):
     def fill(self, result, w, bad):
@@ -96,11 +96,7 @@ class WPPoller(PPoller, polling.WPoller):
             result = item.flush1()
             if result is None:
                 fd = item.fileno()
-                if self.items.get(fd) is None:
-                    self.items[fd] = item
-                    self.poller.register(fd, self.w)
-                else:
-                    self.poller.modify(fd, self.w)
+                self.poller.modify(fd, self.w)
             elif result < 0:
                 bad.append(item)
                 del self[item]
@@ -110,12 +106,7 @@ class WPPoller(PPoller, polling.WPoller):
                     i += 1
         del w[i:]
         for fd, m in result:
-            if m & self.bad:
-                bad.append(item)
-                del self[item]
-            elif m & self.r:
-                self.items[fd].readinto1(None)
-            else:
+            if m & self.w:
                 item = self.items[fd]
                 result = item.flush1()
                 if result is not None:
@@ -126,6 +117,8 @@ class WPPoller(PPoller, polling.WPoller):
                         self.poller.modify(fd, 0)
                         if item:
                             w.append(item)
+            else:
+                self.items[fd].readinto1(None)
 
 class RWPPoller(PPoller, polling.RWPoller):
     def __iter__(self):
@@ -137,20 +130,13 @@ class RWPPoller(PPoller, polling.RWPoller):
         self.poller.register(fd, mode)
         self.items[fd] = [item, mode]
 
-    def __delitem__(self, item):
-        fd = item.fileno()
-        if self.items.pop(fd, (0,0))[1]:
-            self.poller.unregister(fd)
-
     def fill(self, result, r, w, out, bad):
         i = 0
         for item in r:
             result = item.readinto1(out)
             if result is None:
                 fd = item.fileno()
-                self.items[fd]
-                if pair is None:
-                    pair = self.items[fd] = [item, 0]
+                pair = self.items[fd]
                 if pair[1]:
                     self.poller.modify(fd, self.rw)
                     pair[1] = self.rw
@@ -164,14 +150,50 @@ class RWPPoller(PPoller, polling.RWPoller):
                 r[i] = item
                 i += 1
         del r[i:]
+        for fd, m in result:
+            pair = self.items[fd]
+            if m & self.bad:
+                bad.append(pair[1])
+                del self.items[fd]
+                self.poller.unregister(fd)
+                continue
+            item, mode = pair
+            if m & self.r:
+                result = item.readinto1(out)
+                if result == -1:
+                    bad.append(item)
+                    del self.items[fd]
+                    self.poller.unregister(fd)
+                elif result is not None and result != -2:
+                    r.append(item)
+                    if mode & self.w:
+                        self.poller.modify(fd, self.w)
+                        mode = pair[1] = self.w
+                    else:
+                        self.poller.modify(fd, 0)
+                        mode = pair[1] = 0
+            if m & self.w:
+                result = item.flush1()
+                if result is not None:
+                    if result < 0:
+                        bad.append(item)
+                        del self.items[fd]
+                        self.poller.unregister(fd)
+                    else:
+                        if mode & self.r:
+                            self.poller.modify(fd, self.r)
+                            pair[1] = self.r
+                        else:
+                            self.poller.modify(fd, 0)
+                            pair[1] = 0
+                        if item:
+                            w.append(item)
         i = 0
         for item in w:
             result = item.flush1()
             if result is None:
                 fd = item.fileno()
-                pair = self.items.get(fd, None)
-                if pair is None:
-                    pair = self.items[fd] = [item, 0]
+                pair = self.items[fd]
                 if pair[1]:
                     self.poller.modify(fd, self.rw)
                     pair[1] = self.rw
@@ -184,27 +206,7 @@ class RWPPoller(PPoller, polling.RWPoller):
             elif item:
                 w[i] = item
                 i += 1
-            else:
-                fd = item.fileno()
-                if not self.items.get(fd, (0,0))[1]:
-                    del self.items[fd]
         del w[i:]
-        # TODO handle newly polled objects
-        for fd, m in result:
-            item = self.items[fd]
-            if m & self.r:
-                result = item.readinto1(out)
-                if result == -1:
-                    bad.append(item)
-                    self.poller.unregister(fd)
-                    del self.items[fd]
-                elif result is not None and result != -2:
-                    r.append(item)
-                    self.poller.unregister(fd)
-            if m & self.w:
-                result = item.flush1()
-                if result is not None:
-                    
 
 
 
