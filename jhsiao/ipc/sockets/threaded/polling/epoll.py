@@ -28,16 +28,17 @@ import select
 
 from . import polling
 
-class PPoller(object):
-    r = select.POLLIN
-    w = select.POLLOUT
+class EPPoller(object):
+    r = select.EPOLLIN | select.EPOLLONESHOT
+    w = select.EPOLLOUT | select.EPOLLONESHOT
     rw = r | w
-    s = r
-    bad = select.POLLHUP | select.POLLERR | select.POLLNVAL
+    s = select.EPOLLIN
+    bad = select.EPOLLHUP | select.EPOLLERR
 
     def __init__(self):
         self.items = {}
-        self.poller = self.cls()
+        self.poller = select.epoll()
+        self.poll = self.poller.poll
 
     def __iter__(self):
         return iter(self.items.values())
@@ -52,17 +53,11 @@ class PPoller(object):
         self.poller.register(fd, mode)
         self.items[fd] = item
 
-    def poll(self, timeout=None):
-        if timeout is None:
-            return self.poller.poll()
-        else:
-            return self.poller.poll(timeout*1000)
+    def poll(self, timeout=-1):
+        return self.poller.poll(timeout)
 
     def close(self):
-        close = getattr(self.poller, 'close')
-        if close is not None:
-            close()
-
+        self.poller.close()
 
 class RPPoller(PPoller, polling.RPoller):
     def __setitem__(self, item, mode):
@@ -91,7 +86,6 @@ class RPPoller(PPoller, polling.RPoller):
                 del self[item]
             elif result is not None and result != -2:
                 r.append(item)
-                self.poller.modify(fd, 0)
 
 class WPPoller(PPoller, polling.WPoller):
     def fill(self, result, w, bad):
@@ -117,10 +111,8 @@ class WPPoller(PPoller, polling.WPoller):
                     if result < 0:
                         bad.append(item)
                         del self[item]
-                    else:
-                        self.poller.modify(fd, 0)
-                        if item:
-                            w.append(item)
+                    elif item:
+                        w.append(item)
             else:
                 self.items[fd].readinto1(None)
 
