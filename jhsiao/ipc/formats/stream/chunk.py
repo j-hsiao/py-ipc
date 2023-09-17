@@ -26,6 +26,7 @@ decodes = [
 ]
 
 from . import bases
+from jhsiao.ipc import errnos
 
 def bitlen_idx():
     idx = []
@@ -111,9 +112,9 @@ class Reader(bases.Reader):
             try:
                 result = self.readinto1(out)
             except EnvironmentError as e:
-                if e.errno in bases.WOULDBLOCK:
+                if e.errno in errnos.WOULDBLOCK:
                     return None
-                elif e.errno != bases.EINTR:
+                elif e.errno != errnos.EINTR:
                     raise
             if result or result is None:
                 return result
@@ -124,10 +125,10 @@ class Reader(bases.Reader):
             try:
                 chunk = self._readinto(view[amt:])
             except EnvironmentError as e:
-                if e.errno in bases.WOULDBLOCK:
+                if e.errno in errnos.WOULDBLOCK:
                     self.pview = view[amt:]
                     return None
-                elif e.errno == bases.EINTR:
+                elif e.errno == errnos.EINTR:
                     continue
                 raise
             if chunk:

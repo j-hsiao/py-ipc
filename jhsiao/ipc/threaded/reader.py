@@ -10,36 +10,6 @@ from ..formats import bases
 from . import polling
 from .polling import control
 
-if sys.version_info > (3,4):
-    _wait_for_cond = threading.Condition.wait_for
-else:
-    import time
-    def _wait_for_cond(cond, pred, timeout=None):
-        """Wait for pred to be true.
-
-        Assume cond is held before this is called.
-        """
-        result = pred()
-        if result or timeout == 0:
-            return result
-        elif timeout is None:
-            while not pred():
-                cond.wait(None)
-            return True
-        else:
-            end = time.time() + timeout
-            cond.wait(timeout)
-            while not pred():
-                now = time.time()
-                if now < end:
-                    try:
-                        cond.wait(end - now)
-                    except EnvironmentError as e:
-                        if e.errno != bases.EINTR:
-                            raise
-                else:
-                    return False
-            return True
 
 class Reader(object):
     """Most basic read polling."""

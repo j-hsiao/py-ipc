@@ -31,6 +31,19 @@ Pollers do not check for invalid filenos.
 """
 __all__ = ['Poller', 'RPoller', 'WPoller', 'RWPoller']
 
+
+import sys
+import threading
+
+
+if sys.version_info > (3,4):
+    _wait_for_cond = threading.Condition.wait_for
+else:
+    from jhsiao.ipc import errnos
+    import time
+
+
+
 class Poller(object):
     """Register and poll objects.
 
@@ -48,11 +61,23 @@ class Poller(object):
             readinto1() returning -2 implies the object was registered
             with s.
     """
-    Controller = None
+    def __init__(self):
+        self.cond = threading.Condition()
+
     def __iter__(self):
         """Iterate on registered items."""
         raise NotImplementedError
 
+    # mainthread interface
+    def step(self):
+        """Poll once and incremental read/write."""
+        raise NotImplementedError
+
+    def start(self):
+        """Start a polling thread."""
+        raise NotImplementedError
+
+    # Pollthread interface
     def __delitem__(self, item):
         """Call unregister."""
         self.unregister(item)
@@ -72,14 +97,6 @@ class Poller(object):
         """
         self[item] = mode
 
-    def controller(self):
-        """Return a controller class for managing objects.
-
-        The controller methods should generally be called in a main
-        thread while poll/fill would be called in a separate thread.
-        """
-        raise NotImplementedError
-
     def poll(self, timeout):
         """Poll objects and return backend-specific object.
 
@@ -94,6 +111,56 @@ class Poller(object):
         """
         pass
 
+class _RPoller(object):
+    def __init__(self):
+        super(_RPoller, self).__init__()
+        self.rq = []
+
+    def get(self, timeout=None):
+        with self.cond:
+            if self.rq or self._wait_cond(timeout):
+                ret = self.rq
+                self.rq = []
+                return ret
+
+    if sys.version_info > (3,4):
+        def _wait_cond(self, timeout=None):
+            """Wait for received messages.
+
+            Assume cond is held before this is called.
+            """
+            return self.cond.wait_for(self.rq.__len__, timeout)
+    else:
+        def _wait_cond(self, timeout=None):
+            """Wait for received messages.
+
+            Assume cond is held before this is called.
+            """
+            rq = self.rq
+            result = len(rq)
+            if result or timeout == 0:
+                return result
+            elif timeout is None:
+                while not pred():
+                    cond.wait(None)
+                return True
+            else:
+                end = time.time() + timeout
+                cond.wait(timeout)
+                while not pred():
+                    now = time.time()
+                    if now < end:
+                        try:
+                            cond.wait(end - now)
+                        except EnvironmentError as e:
+                            if e.errno != errnos.EINTR:
+                                raise
+                    else:
+                        return False
+                return True
+
+
+
 class RPoller(Poller):
     """Poll for reads.
 
@@ -102,6 +169,10 @@ class RPoller(Poller):
     """
     def __init__(self):
         self.rq = []
+
+    def get(self, timeout=None):
+        """Return a list of received messages."""
+        raise NotImplementedError
 
     def fill(self, pollout, r, out, bad):
         """Read a little data from each item.
@@ -118,6 +189,10 @@ class WPoller(Poller):
     def __init__(self):
         self.wq = []
 
+    def write(self, fobj, data):
+        """Enqueue a write on fobj with data."""
+        raise NotImplementedError
+
     def fill(self, pollout, w, bad):
         """Call flush1() on writers.
 
@@ -132,6 +207,14 @@ class RWPoller(Poller):
     def __init__(self):
         self.rq = []
         self.wq = []
+
+    def write(self, fobj, data):
+        """Enqueue a write on fobj with data."""
+        raise NotImplementedError
+
+    def get(self, timeout=None):
+        """Return a list of received messages."""
+        raise NotImplementedError
 
     def fill(self, pollout, r, w, out, bad):
         """Like WPoller.fill() and RPoller.fill()."""

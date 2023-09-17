@@ -14,28 +14,12 @@ __all__ = [
     'BufferedReader',
     'Writer',
     'QWriter',
-    'EAGAIN',
-    'EWOULDBLOCK',
 ]
 
 import collections
 import io
-import platform
-try:
-    import errno
-except ImportError:
-    EINTR = 4
-    EAGAIN = 11
-    EWOULDBLOCK = 10035 if platform.system() == 'Windows' else 11
-else:
-    EINTR = getattr(errno, 'EINTR', 4)
-    EAGAIN = getattr(errno, 'EAGAIN', 11)
-    EWOULDBLOCK = getattr(
-        errno,
-        'EWOULDBLOCK',
-        10035 if platform.system() == 'Windows' else 11)
 
-WOULDBLOCK = set([EAGAIN, EWOULDBLOCK])
+from jhsiao.ipc import errnos
 
 class FileWrapper(object):
     def __init__(self, f):
@@ -106,9 +90,9 @@ class Reader(FileWrapper):
             while result == 0:
                 result = self.readinto1(out)
         except EnvironmentError as e:
-            if e.errno in WOULDBLOCK:
+            if e.errno in errnos.WOULDBLOCK:
                 return None
-            elif e.errno != EINTR:
+            elif e.errno != errnos.EINTR:
                 raise
             else:
                 return self.readinto(out)
@@ -299,10 +283,10 @@ class QWriter(Writer):
                 try:
                     chunk = self.f.write(view[amt:])
                 except EnvironmentError as e:
-                    if e.errno in WOULDBLOCK:
+                    if e.errno in errnos.WOULDBLOCK:
                         self.q[0] = view[amt:]
                         return numflushed + amt or None
-                    elif e.errno == EINTR:
+                    elif e.errno == errnos.EINTR:
                         chunk = 0
                     raise
                 except Exception:
