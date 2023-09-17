@@ -180,3 +180,9 @@ class PollWrapListener(object):
                 file=sys.stderr)
         return -2
 
+
+# TODO:
+# class for handling
+# read/write or readonly/writeonly etc
+# class needs access to:
+# r, w, bad? poller, items?

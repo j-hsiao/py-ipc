@@ -3,26 +3,32 @@
 # three bits are meaningless in the events field, and will be set in the
 # revents field whenever the corresponding condition is true.)
 #
-# TODO considerations:
-# 1. suppose polling gives HUP/ERR/NVAL, want to unregister it from
-# poller (otherwise it'll keep getting polled)
-# BUT. if it was already being processed in r/w?
-# if w: would write->error?
-# if r: would read->error?
-# maybe no extra processing needed
-# would unregister but already checked if need to unregister from poller
-# so safe
+# Considerations:
+# registering fds
+#   1. polling handled in a separate thread
+#   2. items are registered via a read signal
+#         (writing to some fd to interrupt poll)
+#   3. For read:
+#         register once, and continue polling
+#   4. For write:
+#         If initial write is in main thread:
+#             race condition: maybe something is being written then?
+#         The register fd can try writing and only then add to w if not
+#             fully written.  No race conditions.
+# handling HUP/ERR/NVAL
+#   1. suppose polling gives HUP/ERR/NVAL, want to unregister it from
+#   poller (otherwise it'll keep getting polled)
+#   BUT. if currently in r or w, would error, can just fully unregister
+#   without removing from r or w
+#   2. yet also, maybe don't need explicit handling? read/write would
+#       indicate an error anyways...
 #
-# thought: handling hup/err/nval separately might not be necessary
-# since trying to read/write if it was in error state should result
-# in error and removing it/adding to bad anyways.
+# bad, closing:
+#   if closed, fileno() may error, but unregister calls fileno()?
+#   how to handle
 #
-# for writer, get item into w somehow
-# and also register somehow?
-#
-# but if register via read signal, can it be guaranteed to be
-# registered before the write is handled?: add to w and register via the
-# read signal, means w is never unregistered
+# same thing may be added to bad multiple times...
+# maybe use a set? or doesn't matter?
 __all__ = ['RPoller', 'WPoller', 'RWPoller']
 import select
 
@@ -77,7 +83,7 @@ class RPPoller(PPoller, polling.RPoller):
             if result is None:
                 self.poller.modify(item.fileno(), self.r)
             elif result == -1:
-                bad.append(item)
+                bad.add(item)
                 del self[item]
             else:
                 r[i] = item
@@ -87,7 +93,7 @@ class RPPoller(PPoller, polling.RPoller):
             item = self.items[fd]
             result = item.readinto1(out)
             if result == -1:
-                bad.append(item)
+                bad.add(item)
                 del self[item]
             elif result is not None and result != -2:
                 r.append(item)
@@ -102,7 +108,7 @@ class WPPoller(PPoller, polling.WPoller):
                 fd = item.fileno()
                 self.poller.modify(fd, self.w)
             elif result < 0:
-                bad.append(item)
+                bad.add(item)
                 del self[item]
             else:
                 if item:
@@ -115,7 +121,7 @@ class WPPoller(PPoller, polling.WPoller):
                 result = item.flush1()
                 if result is not None:
                     if result < 0:
-                        bad.append(item)
+                        bad.add(item)
                         del self[item]
                     else:
                         self.poller.modify(fd, 0)
@@ -159,7 +165,7 @@ class RWPPoller(PPoller, polling.RWPoller):
                     self.poller.modify(fd, self.r)
                     pair[1] = self.r
             elif result == -1:
-                bad.append(item)
+                bad.add(item)
                 del self[item]
             else:
                 r[i] = item
@@ -168,7 +174,7 @@ class RWPPoller(PPoller, polling.RWPoller):
         for fd, m in result:
             pair = self.items[fd]
             if m & self.bad:
-                bad.append(pair[1])
+                bad.add(pair[1])
                 del self.items[fd]
                 self.poller.unregister(fd)
                 continue
@@ -177,7 +183,7 @@ class RWPPoller(PPoller, polling.RWPoller):
             if m & self.r:
                 result = item.readinto1(out)
                 if result == -1:
-                    bad.append(item)
+                    bad.add(item)
                     del self.items[fd]
                     self.poller.unregister(fd)
                     continue
@@ -209,7 +215,7 @@ class RWPPoller(PPoller, polling.RWPoller):
                     self.poller.register(fd, self.w)
                     pair[1] = self.w
             elif result < 0:
-                bad.append(item)
+                bad.add(item)
                 del self[item]
             elif item:
                 w[i] = item
