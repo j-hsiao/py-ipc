@@ -53,14 +53,7 @@ class Reader(bases.Reader):
     def readinto1(self, out):
         if self.partial is None:
             view = self.view
-            try:
-                amt = self._readinto(view[self.pos:])
-            except EnvironmentError as e:
-                if e.errno in bases.WOULDBLOCK:
-                    return None
-                elif e.errno == bases.EINTR:
-                    return self.readinto1(out)
-                raise
+            amt = self._readinto(view[self.pos:])
             if amt:
                 pos = self.pos + amt
                 start = 0
@@ -97,14 +90,7 @@ class Reader(bases.Reader):
             elif amt == 0:
                 return -1
         else:
-            try:
-                amt = self._readinto(self.pview)
-            except EnvironmentError as e:
-                if e.errno in bases.WOULDBLOCK:
-                    return None
-                elif e.errno == bases.EINTR:
-                    return self.readinto1(out)
-                raise
+            amt = self._readinto(self.pview)
             if amt:
                 remain = self.pview[amt:]
                 if len(remain):
@@ -122,7 +108,13 @@ class Reader(bases.Reader):
 
     def readinto(self, out):
         while self.partial is None:
-            result = self.readinto1(out)
+            try:
+                result = self.readinto1(out)
+            except EnvironmentError as e:
+                if e.errno in bases.WOULDBLOCK:
+                    return None
+                elif e.errno != bases.EINTR:
+                    raise
             if result or result is None:
                 return result
         view = self.pview

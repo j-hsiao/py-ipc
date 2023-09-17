@@ -4,6 +4,7 @@ These classes are more oriented towards
 sending/receiving entire objects.
 
 Readers and QWriters are compatible with non-blocking io.
+BWriter requires io.BufferedIOBase type behavior.
 (Even non-conformant io.RawIOBase that throw instead of returning None.)
 It is expected that non-conformant exception is an EnvironmentError
 """
@@ -101,8 +102,16 @@ class Reader(FileWrapper):
         If would block, return None
         """
         result = self.readinto1(out)
-        while result == 0:
-            result = self.readinto1(out)
+        try:
+            while result == 0:
+                result = self.readinto1(out)
+        except EnvironmentError as e:
+            if e.errno in WOULDBLOCK:
+                return None
+            elif e.errno != EINTR:
+                raise
+            else:
+                return self.readinto(out)
         return result
 
     def read(self):
@@ -115,7 +124,11 @@ class Reader(FileWrapper):
         return L, self.readinto(L)
 
 class BufferedReader(Reader):
-    """Read into a buffer that may grow."""
+    """Read into a buffer that may grow.
+
+    BufferedReader will try to use readinto1 if available to avoid
+    double buffering.
+    """
 
     def __init__(self, f, maxsize=0, initial=io.DEFAULT_BUFFER_SIZE, factor=1.5, **kwargs):
         """Initialize a BufferedReader.
@@ -176,15 +189,7 @@ class BufferedReader(Reader):
         raise NotImplementedError
 
     def readinto1(self, out):
-        try:
-            amt = self._readinto(self.view[self.stop:])
-        except EnvironmentError as e:
-            if e.errno in WOULDBLOCK:
-                return None
-            elif e.errno == EINTR:
-                return self.readinto1(out)
-            raise
-        # non-blocking, still valid.
+        amt = self._readinto(self.view[self.stop:])
         if amt:
             oldstop = self.stop
             self.stop += amt
@@ -233,7 +238,8 @@ class BWriter(Writer):
     Blocking writing can be easier because there is no need to manage
     buffers for partial writes.  They can also be more performant
     compared to QWriter assuming you do not need to manage multiple
-    writers in a single thread.
+    writers in a single thread.  The given file object should be
+    a io.BufferedIOBase or follow its semantics.
     """
     def flush(self):
         self.f.flush()
@@ -265,14 +271,7 @@ class QWriter(Writer):
         """
         if self.q:
             view = self.q[0]
-            try:
-                amt = self.f.write(view)
-            except EnvironmentError as e:
-                if e.errno in WOULDBLOCK:
-                    return None
-                elif e.errno == EINTR:
-                    return self.flush1()
-                raise
+            amt = self.f.write(view)
             view = view[amt:]
             if len(view):
                 self.q[0] = view
@@ -287,7 +286,7 @@ class QWriter(Writer):
     def flush(self):
         """Keep writing until all flushed.
 
-        Stop if block or error.
+        Stop if would block or error.
         Return the total number of bytes flushed.
         None if would block and no bytes flushed.
         """
