@@ -12,7 +12,8 @@ def test_reader_basic():
         amt = f.readinto1(objs)
         assert amt > 0
         assert f.readinto1(objs) < 0
-        assert objs[0] == data[0]
+        assert objs[0][0] is f
+        assert objs[0][1] == data[0]
         assert amt == f.f.tell()
 
     with line.Reader(io.BytesIO(data[0]), 'r') as f:
@@ -20,7 +21,8 @@ def test_reader_basic():
         amt = f.readinto1(objs)
         assert amt > 0
         assert f.readinto1(objs) < 0
-        assert objs[0] == text[0]
+        assert objs[0][0] is f
+        assert objs[0][1] == text[0]
         assert amt == f.f.tell()
 
     with line.Reader(io.BytesIO(data[0] + data[1])) as f:
@@ -28,14 +30,14 @@ def test_reader_basic():
         assert f.readinto(objs)
         assert f.readinto(objs) > 0
         assert f.readinto(objs) < 0
-        assert objs == [b'hello world\n', b'goodbye\n', b'whatever']
+        assert objs == [(f, b'hello world\n'), (f, b'goodbye\n'), (f, b'whatever')]
 
     with line.Reader(io.BytesIO(data[0] + data[1]), 'r') as f:
         objs = []
         assert f.readinto(objs)
         assert f.readinto(objs) > 0
         assert f.readinto(objs) < 0
-        assert objs == [u'hello world\n', u'goodbye\n', u'whatever']
+        assert objs == [(f, u'hello world\n'), (f, u'goodbye\n'), (f, u'whatever')]
 
 def test_reader_split():
     with io.BytesIO(data[0][:1]) as buf:
@@ -62,7 +64,8 @@ def test_reader_split():
             amt = f.readinto1(objs)
             assert amt > 0
             assert f.readinto1(objs) < 0
-            assert objs[0] == data[0]
+            assert objs[0][0] is f
+            assert objs[0][1] == data[0]
             assert amt == buf.tell()
 
     with io.BytesIO(data[0] + data[1][:1]) as buf:
@@ -70,7 +73,8 @@ def test_reader_split():
             objs = []
             amt = f.readinto(objs)
             assert amt > 0
-            assert objs[0] == data[0]
+            assert objs[0][1] == data[0]
+            assert objs[0][0] is f
 
             cur = buf.tell()
             buf.write(data[1][1:])
@@ -79,7 +83,7 @@ def test_reader_split():
             assert amt2 > 0
             amt3 = f.readinto(objs)
             assert amt3 > 0
-            assert objs[1:] == data[1].splitlines(keepends=True)
+            assert objs[1:] == [(f, line) for line in data[1].splitlines(keepends=True)]
             assert amt + amt2 + amt3 == buf.tell()
 
 def test_reader_multisplit():
@@ -91,7 +95,7 @@ def test_reader_multisplit():
             objs = []
             amt = f.readinto1(objs)
             assert amt > 0
-            assert objs[0] == data[0]
+            assert objs[0] == (f, data[0])
 
             objs = []
             cur = buf.tell()
@@ -104,7 +108,7 @@ def test_reader_multisplit():
             buf.seek(cur)
             amt2 = f.readinto1(objs)
             assert amt2 > 0
-            assert objs[0] == b'goodbye\n'
+            assert objs[0] == (f, b'goodbye\n')
 
             objs = []
             cur = buf.tell()
@@ -114,7 +118,7 @@ def test_reader_multisplit():
             amt3 = f.readinto1(objs)
             assert amt3 > 0
             assert f.readinto1(objs) < 0
-            assert objs[0] == b'whatever'
+            assert objs[0] == (f, b'whatever')
             assert amt + amt2 + amt3 == buf.tell()
 
 

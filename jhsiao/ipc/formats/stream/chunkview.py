@@ -64,7 +64,7 @@ class Reader(bases.BufferedReader):
                     self.view[:self.stop] = remain
                 return parsed
             else:
-                out.append(self.parse_view(self.view[idx:end]))
+                out.append((self, self.parse_view(self.view[idx:end])))
                 parsed = idx = end
         self.stop = 0
         self.chunkend = None

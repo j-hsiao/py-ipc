@@ -73,7 +73,7 @@ class Reader(bases.Reader):
                         length = pick.unpack(view[size_start:size_end])[0]
                         data_end = size_end + length
                         if data_end <= pos:
-                            out.append(view[size_end:data_end].tobytes())
+                            out.append((self, view[size_end:data_end].tobytes()))
                             start = data_end
                         else:
                             self.pre = size_end - start
@@ -99,7 +99,7 @@ class Reader(bases.Reader):
                     return 0
                 else:
                     p = self.partial
-                    out.append(self.partial)
+                    out.append((self, self.partial))
                     self.partial = self.pview = None
                     return len(p) + self.pre
             elif amt is None:
@@ -137,7 +137,7 @@ class Reader(bases.Reader):
                 return None
             elif chunk == 0:
                 return -1
-        out.append(self.partial)
+        out.append((self, self.partial))
         p = self.partial
         self.partial = self.pview = None
         return len(p) + self.pre

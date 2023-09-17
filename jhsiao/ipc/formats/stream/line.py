@@ -41,7 +41,7 @@ class Reader(bases.BufferedReader):
         start = 0
         while 0 <= nl < stop:
             end = nl+1
-            out.append(self.parse(view[start:end]))
+            out.append((self, self.parse(view[start:end])))
             start = end
             nl = self.buf.find(b'\n', start, stop)
         if start:
@@ -69,7 +69,7 @@ class Reader(bases.BufferedReader):
             return None
         elif amt == 0:
             if self.stop:
-                out.append(self.parse(self.view[:self.stop]))
+                out.append((self, self.parse(self.view[:self.stop])))
                 ret = self.stop
                 self.stop = 0
                 return ret

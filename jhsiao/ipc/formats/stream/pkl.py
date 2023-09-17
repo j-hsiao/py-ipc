@@ -33,7 +33,7 @@ class Reader(bases.BufferedReader):
         with viewreader.ViewReader(self.view[:self.stop]) as f:
             try:
                 while start < self.stop:
-                    out.append(pickle.load(f))
+                    out.append((self, pickle.load(f)))
                     start = f.pos
             except Exception:
                 pass

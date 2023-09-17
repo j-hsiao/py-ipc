@@ -61,7 +61,7 @@ class Reader(FileWrapper):
         """Read some data (max 1 syscall) and append to out.
 
         This is useful for allowing a single thread to handle reading
-        from multiple readers.
+        from multiple readers.  Append tuples to out (self, message).
 
         Input
         =====

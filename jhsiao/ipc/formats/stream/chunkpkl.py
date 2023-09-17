@@ -10,8 +10,7 @@ import pickle
 from . import chunkview
 
 class Reader(chunkview.Reader):
-    def parse_view(self, view):
-        return pickle.loads(view)
+    parse_view = staticmethod(pickle.loads)
 
 class BWriter(chunkview.BWriter):
     def write(self, data):

@@ -38,7 +38,7 @@ def test_reader():
                 assert pr.readinto1(objs) == 0
             else:
                 assert pr.readinto1(objs) > 1
-        assert np.all(arr == objs[-1])
+        assert np.all(arr == objs[-1][1])
         t1 = time.time()
         for stop in range(blocksize, len(item2) + blocksize - 1, blocksize):
             writer.write(item2[stop-blocksize:stop])
@@ -47,7 +47,7 @@ def test_reader():
                 assert pr.readinto1(objs) == 0
             else:
                 assert pr.readinto1(objs) > 1
-        assert np.all(arr == objs[-1])
+        assert np.all(arr == objs[-1][1])
         t2 = time.time()
         print(t2-t1)
 

@@ -20,7 +20,8 @@ def test_reader_basic():
         amt = f.readinto1(objs)
         assert amt > 0
         assert f.readinto1(objs) < 0
-        assert objs[0] == data[0]
+        assert objs[0][0] is f
+        assert objs[0][1] == data[0]
         assert amt == f.f.tell()
 
     with chunkpkl.Reader(io.BytesIO(vals[0] + vals[1])) as f:
@@ -28,8 +29,10 @@ def test_reader_basic():
         amt = f.readinto(objs)
         assert amt == f.f.tell()
         assert f.readinto(objs) < 0
-        assert objs[0] == data[0]
-        assert objs[1] == data[1]
+        assert objs[0][0] is f
+        assert objs[0][1] == data[0]
+        assert objs[1][0] is f
+        assert objs[1][1] == data[1]
 
 
 def test_reader_split():
@@ -58,7 +61,8 @@ def test_reader_split():
             amt = f.readinto1(objs)
             assert amt > 0
             assert f.readinto1(objs) < 0
-            assert objs[0] == data[0]
+            assert objs[0][1] == data[0]
+            assert objs[0][0] is f
             assert amt == buf.tell()
 
     with io.BytesIO(vals[0] + vals[1][:1]) as buf:
@@ -67,7 +71,8 @@ def test_reader_split():
             amt = f.readinto(objs)
             assert amt > 0
             assert f.readinto(objs) < 0
-            assert objs[0] == data[0]
+            assert objs[0][0] is f
+            assert objs[0][1] == data[0]
 
             cur = buf.tell()
             buf.write(vals[1][1:])
@@ -75,7 +80,8 @@ def test_reader_split():
             amt2 = f.readinto(objs)
             assert amt2 > 0
             assert f.readinto(objs) < 0
-            assert objs[1] == data[1]
+            assert objs[1][0] is f
+            assert objs[1][1] == data[1]
             assert amt + amt2 == buf.tell()
 
 def test_reader_multisplit():
@@ -88,7 +94,8 @@ def test_reader_multisplit():
             amt = f.readinto1(objs)
             assert amt > 0
             assert f.readinto1(objs) < 0
-            assert objs[0] == data[0]
+            assert objs[0][0] is f
+            assert objs[0][1] == data[0]
 
             objs = []
             cur = buf.tell()
@@ -109,7 +116,8 @@ def test_reader_multisplit():
             amt2 = f.readinto1(objs)
             assert amt2 > 0
             assert f.readinto1(objs) < 0
-            assert objs[0] == data[1]
+            assert objs[0][0] is f
+            assert objs[0][1] == data[1]
             assert amt + amt2 == buf.tell()
 
 
