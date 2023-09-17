@@ -7,7 +7,7 @@ import time
 import platform
 
 from jhsiao.ipc import polling
-from jhsiao.ipc.sockets.formats import bases
+from jhsiao.ipc.formats import bases
 
 def connect_polling(pollercls):
     """Test polling on connect to listening socket."""

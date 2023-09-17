@@ -9,6 +9,7 @@ __all__ = ['RWPair', 'PollRegister', 'PollWrapListener']
 import socket
 import sys
 import uuid
+import traceback
 
 from ... import sockfile
 from ...formats import bases
@@ -34,23 +35,24 @@ class RWPair(object):
                 try:
                     L.bind(('127.0.0.1', 0))
                     L.listen(1)
-                    self.r, self.w = self._from_listener(L)
+                    self.rf, self.wf = self._from_listener(L)
                 finally:
                     L.close()
             else:
                 try:
                     L.bind('\0' + uuid.uuid4().hex)
                     L.listen(1)
-                    self.r, self.w = self._from_listener(L)
+                    self.rf, self.wf = self._from_listener(L)
                 finally:
                     L.close()
         else:
-            self.r, self.w = self._from_listener(sock)
-        self.fileno = self.r.fileno
+            self.rf, self.wf = self._from_listener(sock)
+        self.fileno = self.rf.fileno
 
     def _from_listener(self, L):
+        """Create a read/write file-like object from a listener socket."""
         c = socket.socket(L.family, L.type)
-        c.settimeout(0)
+        c.settimeout(None)
         try:
             c.connect(L.getsockname())
         except Exception:
@@ -58,24 +60,8 @@ class RWPair(object):
             raise
         else:
             s, a = L.accept()
-            s.settimeout(0)
+            s.settimeout(None)
             return (sockfile.Sockfile(s), sockfile.Sockfile(c))
-
-    def clear(self):
-        """Consume a byte."""
-        try:
-            self.r.read(1)
-        except EnvironmentError as e:
-            if e.errno not in bases.WOULDBLOCK:
-                raise
-
-    def set(self):
-        """Send a byte to make polling return readable."""
-        try:
-            self.w.send(b'1')
-        except EnvironmentError as e:
-            if e.errno not in bases.WOULDBLOCK:
-                raise
 
     def readinto1(self, out):
         return -2
@@ -84,8 +70,8 @@ class RWPair(object):
         return self.fileno()
 
     def close(self):
-        self.inp.close()
-        self.out.close()
+        self.rf.close()
+        self.wf.close()
 
 
 class NullLock(object):
@@ -93,42 +79,6 @@ class NullLock(object):
         pass
     def __exit__(self, tp, exc, tb):
         pass
-
-class PollRegister(RWPair):
-    """Use fds to interrupt polling to add more items to be polled.
-
-    Generally, register() will be called in a separate thread from the
-    polling thread.  readinto1() will be called in the poller's poll()
-    method.
-
-    NOTE: if registering items for write polling, it would probably be
-    more performant to somehow put the item into the w argument
-    to WPoller or RWPoller instead of registering it.  This way, instead
-    of polling first, it would try to write the data and only poll if
-    it would have blocked.
-    """
-
-    def __init__(self, poller, sock=None, lock=NullLock()):
-        super(PollRegister, self).__init__(sock)
-        self.lock = lock
-        self.poller = poller
-        self.q = []
-
-    def register(self, *args):
-        """Add an item to be registered to the poll."""
-        with self.lock:
-            self.q.append(args)
-            self.set()
-
-    def readinto1(self, out):
-        """Register items."""
-        with self.lock:
-            q = self.q
-            self.q = []
-        for args in q:
-            self.clear()
-            poller.register(*args)
-        return -2
 
 class PollWrapListener(object):
     """Wrap accepted connections and register with a poller."""
@@ -179,6 +129,8 @@ class PollWrapListener(object):
                 'fd', s.fileno(),
                 file=sys.stderr)
         return -2
+
+class ReadRegister(object)
 
 
 # TODO:

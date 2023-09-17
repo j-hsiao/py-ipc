@@ -1,7 +1,7 @@
 import socket
 
 from jhsiao.ipc.sockets.threaded import reader, listener
-from jhsiao.ipc.sockets.formats import chunkpkl
+from jhsiao.ipc.formats import chunkpkl
 from jhsiao.ipc.sockets import sockets, sockfile
 from jhsiao.ipc import polling
 

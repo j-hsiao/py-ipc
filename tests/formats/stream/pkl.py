@@ -1,4 +1,4 @@
-from jhsiao.ipc.sockets.formats import pkl
+from jhsiao.ipc.formats.stream import pkl
 import io
 import os
 import numpy as np
@@ -62,7 +62,7 @@ def test_reader():
 
 def test_readertime():
     setup = '\n'.join((
-        'from jhsiao.ipc.sockets.formats import pkl',
+        'from jhsiao.ipc.formats.stream import pkl',
         'import numpy as np',
         'import io',
         'buf = io.BytesIO()',
@@ -84,7 +84,7 @@ def test_readertime():
 def make_test_split_readertime(char):
     def split_test():
         setup = '\n'.join((
-            'from jhsiao.ipc.sockets.formats import pkl',
+            'from jhsiao.ipc.formats.stream import pkl',
             'import numpy as np',
             'import io',
             'buf = io.BytesIO()',

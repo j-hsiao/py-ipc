@@ -1,14 +1,13 @@
-"""Generic optimized polling for partial read/writes.
+"""Poll objects and handle incremental read/writes for streams.
 
-The pollers poll corresponding read/write and read/write with single
-calls until blocking at which point polling is continued.  Registered
-items should be in non-blocking mode or at least somehow guarantee
-no blocking.
+Handling should follow the classes in `jhsiao.ipc.formats` depending
+on whether the object is readable or writeable or both.
+
 
 Registered readable objects must support:
     readinto1(out)
         Read some data and put any fully parsed data into out.  This is
-        jhsiao.ipc.sockets.formats.bases.Reader.readinto1 except with an
+        jhsiao.ipc.formats.bases.Reader.readinto1 except with an
         additional possible return value of -2.  -2 indicates that the
         item has special handling and is not registered to have one-shot
         like behavior.  Otherwise, None indicates blocking, so rearm the
@@ -49,6 +48,7 @@ class Poller(object):
             readinto1() returning -2 implies the object was registered
             with s.
     """
+    Controller = None
     def __iter__(self):
         """Iterate on registered items."""
         raise NotImplementedError
@@ -72,6 +72,14 @@ class Poller(object):
         """
         self[item] = mode
 
+    def controller(self):
+        """Return a controller class for managing objects.
+
+        The controller methods should generally be called in a main
+        thread while poll/fill would be called in a separate thread.
+        """
+        raise NotImplementedError
+
     def poll(self, timeout):
         """Poll objects and return backend-specific object.
 
@@ -92,6 +100,9 @@ class RPoller(Poller):
     When registering items, read flag is always added and write flag is
     always ignored.
     """
+    def __init__(self):
+        self.rq = []
+
     def fill(self, pollout, r, out, bad):
         """Read a little data from each item.
 
@@ -104,6 +115,9 @@ class RPoller(Poller):
 
 class WPoller(Poller):
     """Write polling object."""
+    def __init__(self):
+        self.wq = []
+
     def fill(self, pollout, w, bad):
         """Call flush1() on writers.
 
@@ -115,6 +129,79 @@ class WPoller(Poller):
 
 class RWPoller(Poller):
     """Combine read and write polling."""
+    def __init__(self):
+        self.rq = []
+        self.wq = []
+
     def fill(self, pollout, r, w, out, bad):
         """Like WPoller.fill() and RPoller.fill()."""
         raise NotImplementedError
+
+class RegisterCtrl(RWPair):
+    """Poller control class.
+
+    Generally, objects will either be read from or written to, possibly
+    both.  For reading, objects should probably be registered to be
+    polled and left.  The corresponding readinto1 method should place
+    any complete messages into a queue or list.
+
+    For writers, write polling is only needed if writing would block.
+    As a result, they shouldn't necessarily be directly registered.
+    """
+    def __init__(self, poller, rlist, wlist, sock=None, lock=NullLock()):
+        super(PollRegister, self).__init__(sock)
+        self.lock = lock
+        self.poller = poller
+        for attr in ('r', 'w', 'rw', 's'):
+            setattr(self, attr, getattr(self.poller, attr))
+        self.rlist = rlist
+        self.wlist = wlist
+        self.rq = []
+        self.wq = []
+
+    def write(self, *args):
+        """Register writing some data.
+
+        args: pair of Writer and data.
+             Writer is a `jhsiao.ipc.formats.bases.Writer`.
+             data is some data that would be given to the writer's
+             write() method.
+        """
+        with self.lock:
+            self.wq.append(args)
+            self.wf.write(b'1')
+
+    def register(self, *args):
+        """Add an item to be registered to the poll.
+
+        This should match the argument of poller.register.
+        """
+        with self.lock:
+            self.rq.append(args)
+            self.wf.write(b'1')
+
+    def readinto1(self, out):
+        """Register items."""
+        with self.lock:
+            rq = self.rq
+            self.rq = []
+            wq = self.wq
+            self.wq = []
+        poller = self.poller
+        for args in rq:
+            try:
+                poller.register(*args)
+            except Exception:
+                traceback.print_exc()
+            self.rf.read(1)
+        for w, data in wq:
+            w.write(data)
+            result = w.flush1()
+            if result == None:
+                poller.modify()? register?
+            elif result == -1:
+                pass
+            elif w:
+                pass
+        return -2
+
