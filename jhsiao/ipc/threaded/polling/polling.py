@@ -35,14 +35,44 @@ __all__ = ['Poller', 'RPoller', 'WPoller', 'RWPoller']
 import sys
 import threading
 
+from . import rwpair
 
 if sys.version_info > (3,4):
-    _wait_for_cond = threading.Condition.wait_for
+    _wait_cond = threading.Condition.wait_for
 else:
     from jhsiao.ipc import errnos
     import time
+    def _wait_cond(cond, pred, timeout=None):
+        """Wait for received messages.
 
-
+        Assume cond is held before this is called.
+        """
+        result = pred()
+        if result or timeout == 0:
+            return result
+        elif timeout is None:
+            try:
+                while not pred():
+                    cond.wait(None)
+            except EnvironmentError as e:
+                if e.errno != errnos.EINTR:
+                    raise
+                return _wait_cond(cond, pred, None)
+            return True
+        else:
+            end = time.time() + timeout
+            cond.wait(timeout)
+            while not pred():
+                now = time.time()
+                if now < end:
+                    try:
+                        cond.wait(end - now)
+                    except EnvironmentError as e:
+                        if e.errno != errnos.EINTR:
+                            raise
+                else:
+                    return False
+            return True
 
 class Poller(object):
     """Register and poll objects.
@@ -62,7 +92,18 @@ class Poller(object):
             with s.
     """
     def __init__(self):
-        self.cond = threading.Condition()
+        self._cond = threading.Condition()
+        self._running = False
+        self._thread = None
+        self._rwpair = rwpair.RWPair()
+        self.fileno = self._rwpair.fileno
+        self[self] = self.s
+
+    def fileno(self):
+        return self.fileno()
+
+    def readinto1(self, out):
+        raise NotImplementedError
 
     def __iter__(self):
         """Iterate on registered items."""
@@ -75,7 +116,25 @@ class Poller(object):
 
     def start(self):
         """Start a polling thread."""
-        raise NotImplementedError
+        with self._cond:
+            if self._running:
+                return
+            self._thread = threading.Thread(target=self._run)
+            self._running = True
+            self._thread.start()
+
+    def stop(self):
+        with self._cond:
+            if not self._running:
+                return
+            self._running = False
+            self._ctrl.wf.write(b'1')
+            thread = self._thread
+        thread.join()
+
+    def _run(self):
+        while self._running
+            self.step()
 
     # Pollthread interface
     def __delitem__(self, item):
@@ -109,55 +168,46 @@ class Poller(object):
 
         Any registered items are left alone.
         """
-        pass
+        self.stop()
+        del self[self]
+        self._rwpair.close()
 
 class _RPoller(object):
+    """Poller with reading functionality."""
     def __init__(self):
         super(_RPoller, self).__init__()
         self.rq = []
 
-    def get(self, timeout=None):
-        with self.cond:
-            if self.rq or self._wait_cond(timeout):
-                ret = self.rq
-                self.rq = []
-                return ret
 
     if sys.version_info > (3,4):
-        def _wait_cond(self, timeout=None):
-            """Wait for received messages.
+        def _pred(self):
+            """predicate for condition variable.
 
-            Assume cond is held before this is called.
+            Note that using self.rq.__len__ is not enough because
+            another thread may have swapped out rq.  This is necessary
+            to be threadsafe and not double up in case get is called
+            from multiple threads.
             """
-            return self.cond.wait_for(self.rq.__len__, timeout)
+            return self.rq
+
+        def get(self, timeout=None):
+            """Get list of available data."""
+            with self._cond:
+                if self.rq or self._cond.wait_for(self._pred, timeout):
+                    ret = self.rq
+                    self.rq = []
+                    return ret
+                return ()
     else:
-        def _wait_cond(self, timeout=None):
-            """Wait for received messages.
+        def get(self, timeout=None):
+            """Get list of available data."""
+            with self._cond:
+                if self.rq or _wait_cond(self._cond, self._pred, timeout):
+                    ret = self.rq
+                    self.rq = []
+                    return ret
+                return ()
 
-            Assume cond is held before this is called.
-            """
-            rq = self.rq
-            result = len(rq)
-            if result or timeout == 0:
-                return result
-            elif timeout is None:
-                while not pred():
-                    cond.wait(None)
-                return True
-            else:
-                end = time.time() + timeout
-                cond.wait(timeout)
-                while not pred():
-                    now = time.time()
-                    if now < end:
-                        try:
-                            cond.wait(end - now)
-                        except EnvironmentError as e:
-                            if e.errno != errnos.EINTR:
-                                raise
-                    else:
-                        return False
-                return True
 
 
 
