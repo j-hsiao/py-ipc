@@ -1,9 +1,9 @@
 __all__ = ['RWPair']
+import io
 import socket
 import uuid
 
 from jhsiao.ipc.sockets import sockfile
-from 
 
 class RWPair(object):
     """Read/Write file-like objects with fds.
@@ -17,7 +17,7 @@ class RWPair(object):
     For unblocking, generally a single byte should be written per event
     and a single byte should be read per event handled.
     """
-    def __init__(self, sock=None):
+    def __init__(self, sock=None, buffered=False):
         """Initialize.
 
         sock: a listening socket if provided.
@@ -29,22 +29,24 @@ class RWPair(object):
                 L = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             except AttributeError:
                 L = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                try:
-                    L.bind(('127.0.0.1', 0))
-                    L.listen(1)
-                    self.rf, self.wf = self._from_listener(L)
-                finally:
-                    L.close()
+                addr = ('127.0.0.1', 0)
             else:
-                try:
-                    L.bind('\0' + uuid.uuid4().hex)
-                    L.listen(1)
-                    self.rf, self.wf = self._from_listener(L)
-                finally:
-                    L.close()
+                addr = '\0' + uuid.uuid4().hex
+            try:
+                L.bind(addr)
+                L.listen(1)
+                self.rf, self.wf = self._from_listener(L)
+            finally:
+                L.close()
         else:
             self.rf, self.wf = self._from_listener(sock)
+        if buffered:
+            self.rf = io.BufferedReader(self.rf)
+            self.wf = io.BufferedWriter(self.wf)
         self.fileno = self.rf.fileno
+        self.write = self.wf.write
+        self.read = self.rf.read
+        self.flush = self.wf.flush
 
     def _from_listener(self, L):
         """Create a read/write file-like object from a listener socket."""
@@ -59,9 +61,6 @@ class RWPair(object):
             s, a = L.accept()
             s.settimeout(None)
             return (sockfile.Sockfile(s), sockfile.Sockfile(c))
-
-    def readinto1(self, out):
-        return -2
 
     def fileno(self):
         return self.fileno()

@@ -29,15 +29,15 @@ Registered writable objects must support:
 NOTE: before items are closed, they should be unregistered from any pollers.
 Pollers do not check for invalid filenos.
 """
-__all__ = ['Poller', 'RPoller', 'WPoller', 'RWPoller']
-
+__all__ = ['Poller']
 
 import sys
 import threading
 
 from . import rwpair
 
-if sys.version_info > (3,4) and isinstance(threading.Condition, type):
+if (isinstance(threading.Condition, type)
+        and hasattr(threading.Condition, 'wait_for')):
     _wait_cond = threading.Condition.wait_for
 else:
     from jhsiao.ipc import errnos
@@ -92,31 +92,109 @@ class Poller(object):
             with s.
     """
     def __init__(self):
+        cls = getattr(self, 'cls', None)
+        if cls is not None:
+            self.poller = cls()
         self._cond = threading.Condition()
         self._running = True
         self._thread = None
-        self._rwpair = rwpair.RWPair()
+        self._rwpair = rwpair.RWPair(buffered=True)
         self.fileno = self._rwpair.fileno
         self[self] = self.s
-        self.bad = []
+        self._data = []
+        self._bad = []
+        self._reading = []
+        self._writing = []
+        self._regq = []
+        self._flushq = []
+
+    def register(self, *args):
+        """Threadsafe register an item.
+
+        It will take effect the next call to step() or the next
+        iteration in the loop if start() was called.
+
+        args: item, mode
+            item: an item with fileno().
+            mode: self.[r|w|rw|s]
+        """
+        with self._cond:
+            self._regq.append(args)
+        self._rwpair.write(b'1')
+        self._rwpair.flush()
+
+    def unregister(self, item):
+        """Threadsafe unregister an item.
+
+        It will take effect the next call to step() or the next
+        iteration in the loop if start() was called.
+
+        args: item, mode
+            item: an item with fileno().
+            mode: self.[r|w|rw|s]
+        """
+        with self._cond:
+            self._regq.append((item, None))
+        self._rwpair.write(b'1')
+        self._rwpair.flush()
+
+    def flush(self, obj):
+        """Register object for flushing until fully flushed or error."""
+        with self._cond:
+            self._flushq.append(obj)
+        self._rwpair.write(b'1')
+        self._rwpair.flush()
+
+    def readinto1(self, out):
+        """For internal use.
+
+        Complete register/unregister/flush operations.
+        """
+        with self._cond:
+            q = self._regq
+            flush = self._flushq
+            self._regq = []
+            self._flushq = []
+        self._rwpair.readinto(bytearray(len(q) + len(flush)))
+        for item, mode in q:
+            if mode is None:
+                del self[item]
+            else:
+                self[item] = mode
+        self._writing.extend(flush)
+
+    def __call__(self):
+        """For internal use.
+
+        Return whether any data or bad objects to handle.
+        """
+        return self._data or self._bad
+
+    def get(self, timeout=None):
+        """Return a list of received data.
+
+        Inputs
+        ======
+        timeout: float | None
+            The timeout to wait for objects.
+        Outputs
+        =======
+        result: list of 2-tuple
+            Each tuple is (data, object).  data is the data that was
+            received.  If it is None
+        """
+        with self._cond:
+            if self._data or self._bad or _wait_cond(
+                    self._cond, self, timeout=None):
+                data = self._data
+                bad = self._bad
+                self._data = []
+                self._bad = []
+                return data, bad
+        return None, None
 
     def fileno(self):
         return self.fileno()
-
-    def readinto1(self, out):
-        """Handle any interrupts of the polling."""
-        raise NotImplementedError
-
-    def __iter__(self):
-        """Iterate on registered items."""
-        raise NotImplementedError
-
-    def step(self):
-        """Poll once and incremental read/write.
-
-        Return True if good to continue
-        """
-        raise NotImplementedError
 
     def start(self):
         """Start a polling thread."""
@@ -134,8 +212,17 @@ class Poller(object):
                 return
             self._running = False
             self._rwpair.write(b'1')
+            self._rwpair.flush()
             thread = self._thread
         thread.join()
+
+    def close(self):
+        """Close the poller.
+
+        Any registered items are left alone.
+        """
+        self.stop()
+        self._rwpair.close()
 
     def _run(self):
         try:
@@ -146,68 +233,21 @@ class Poller(object):
                 self._running = False
                 self._thread = None
 
-    def unregister(self, item):
-        """Unregister an item. public use."""
+    def __iter__(self):
+        """Iterate on registered items."""
         raise NotImplementedError
 
-    def register(self, item, mode):
-        """Register item under mode.
+    def step(self):
+        """Poll once and incremental read/write.
 
-        Re-register to change mode.
-        public use
+        Return True if good to continue.
+        This can be used for manual looping.
         """
         raise NotImplementedError
 
     def __delitem__(self, item):
-        """Unregister in loop."""
+        """Directly unregister an item.  Thread unsafe."""
         raise NotImplementedError
     def __setitem__(self, item, mode):
-        """Register in loop."""
+        """Directly register an item.  Thread unsafe."""
         raise NotImplementedError
-
-    def close(self):
-        """Close the poller.
-
-        Any registered items are left alone.
-        """
-        self.stop()
-        self._rwpair.close()
-
-class RPoller(object):
-    """Poller with reading functionality."""
-    def __init__(self):
-        super(RPoller, self).__init__()
-        self.received = []
-
-    def _pred(self):
-        """predicate for condition variable.
-
-        Note that using self.received.__len__ is not enough because
-        another thread may have swapped out received.  This is necessary
-        to be threadsafe and not double up in case get is called
-        from multiple threads.
-        """
-        return self.received
-
-    def get(self, timeout=None):
-        """Get list of available data."""
-        with self._cond:
-            if self.received or _wait_cond(self._cond, self._pred, timeout):
-                ret = self.received
-                self.received = []
-                return ret
-            return ()
-
-class WPoller(Poller):
-    """Write polling object."""
-    def __init__(self):
-        super(WPoller, self).__init__()
-
-    def write(self, fobj, data):
-        """Enqueue a write on fobj with data."""
-        raise NotImplementedError
-
-class RWPoller(WPoller, RPoller):
-    """Combine read and write polling."""
-    def __init__(self):
-        super(RWPoller, self).__init__()
