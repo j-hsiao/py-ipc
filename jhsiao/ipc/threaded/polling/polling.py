@@ -100,7 +100,6 @@ class Poller(object):
         self._thread = None
         self._rwpair = rwpair.RWPair(buffered=True)
         self.fileno = self._rwpair.fileno
-        self[self] = self.s
         self._data = []
         self._bad = []
         self._reading = []
@@ -185,13 +184,13 @@ class Poller(object):
         """
         with self._cond:
             if self._data or self._bad or _wait_cond(
-                    self._cond, self, timeout=None):
+                    self._cond, self, timeout):
                 data = self._data
                 bad = self._bad
                 self._data = []
                 self._bad = []
                 return data, bad
-        return None, None
+        return (), ()
 
     def fileno(self):
         return self.fileno()
@@ -205,39 +204,35 @@ class Poller(object):
             self._running = True
             self._thread.start()
 
-    def stop(self):
-        """Stop a polling thread."""
+    def close(self):
+        """Close the poller.
+
+        Any registered items are left alone and returned.  This means
+        subclasses must override this and return the relevant items.
+        Stops the thread if it was started.
+        """
         with self._cond:
-            if not self._running:
+            if not self._running and self._thread is None:
                 return
             self._running = False
             self._rwpair.write(b'1')
             self._rwpair.flush()
             thread = self._thread
-        thread.join()
-
-    def close(self):
-        """Close the poller.
-
-        Any registered items are left alone.
-        """
-        self.stop()
+            self._thread = None
+        if thread is not None:
+            thread.join()
+        del self[self]
         self._rwpair.close()
 
     def _run(self):
-        try:
-            while self.step():
-                pass
-        finally:
-            with self._cond:
-                self._running = False
-                self._thread = None
+        while self.step(None):
+            pass
 
     def __iter__(self):
         """Iterate on registered items."""
         raise NotImplementedError
 
-    def step(self):
+    def step(self, timeout=0):
         """Poll once and incremental read/write.
 
         Return True if good to continue.

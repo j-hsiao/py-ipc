@@ -1,13 +1,10 @@
 from __future__ import print_function
-__all__ = [
-    'RSelectPoller',
-    'WSelectPoller',
-    'RWSelectPoller',
-]
+__all__ = ['SelectPoller']
 import select
 import sys
 
 from . import polling
+from jhsiao.ipc import errnos
 
 class SelectPoller(polling.Poller):
     r = 1
@@ -20,6 +17,7 @@ class SelectPoller(polling.Poller):
         self._ritems = set()
         self._witems = set()
         self.reimpl = reimpl
+        self[self] = self.s
 
     def __iter__(self):
         return iter(self.items)
@@ -34,7 +32,11 @@ class SelectPoller(polling.Poller):
         if mode & self.w:
             self._witems.add(item)
 
-    def step(self):
+    def close(self):
+        super(SelectPoller, self).close()
+        return self._ritems.union(self._witems)
+
+    def step(self, timeout=0):
         ritems = self._ritems
         witems = self._witems
         reading = self._reading
@@ -42,7 +44,9 @@ class SelectPoller(polling.Poller):
         data = self._data
         bad = self._bad
         cond = self._cond
-        r, w, x = select.select(ritems, witems, (), 0 if reading or writing else None)
+        if timeout is None and (reading or writing):
+            timeout = 0
+        r, w, x = select.select(ritems, witems, (), timeout)
         if w:
             witems.difference_update(w)
             writing.extend(w)
@@ -54,28 +58,42 @@ class SelectPoller(polling.Poller):
             if reading:
                 i = 0
                 for item in reading:
-                    result = item.readinto1(data)
-                    if result is None or result == -2:
+                    try:
+                        result = item.readinto1(data)
+                    except EnvironmentError as e:
+                        if e.errno not in errnos.WOULDBLOCK:
+                            raise
                         ritems.add(item)
-                    elif result == -1:
-                        bad.append(item)
-                        wake = True
                     else:
-                        reading[i] = item
-                        i += 1
-                        wake = wake or result > 0
+                        if result is None or result == -2:
+                            ritems.add(item)
+                        elif result == -1:
+                            bad.append(item)
+                            wake = True
+                        else:
+                            reading[i] = item
+                            i += 1
+                            wake = wake or result > 0
+                del reading[i:]
             if writing:
                 i = 0
                 for item in writing:
-                    result = item.flush1()
-                    if result is None:
+                    try:
+                        result = item.flush1()
+                    except EnvironmentError as e:
+                        if e.errno not in errnos.WOULDBLOCK:
+                            raise
                         witems.add(item)
-                    elif result == -1:
-                        bad.append(item)
-                        wake = True
                     else:
-                        writing[i] = item
-                        i += 1
+                        if result is None:
+                            witems.add(item)
+                        elif result == -1:
+                            bad.append(item)
+                            wake = True
+                        else:
+                            writing[i] = item
+                            i += 1
+                del writing[i:]
             if wake:
                 cond.notify()
             return self._running
@@ -105,28 +123,42 @@ class SelectPoller(polling.Poller):
                     if reading:
                         i = 0
                         for item in reading:
-                            result = item.readinto1(data)
-                            if result is None or result == -2:
+                            try:
+                                result = item.readinto1(data)
+                            except EnvironmentError as e:
+                                if e.errno not in errnos.WOULDBLOCK:
+                                    raise
                                 ritems.add(item)
-                            elif result == -1:
-                                bad.append(item)
-                                wake = True
                             else:
-                                reading[i] = item
-                                i += 1
-                                wake = wake or result > 0
+                                if result is None or result == -2:
+                                    ritems.add(item)
+                                elif result == -1:
+                                    bad.append(item)
+                                    wake = True
+                                else:
+                                    reading[i] = item
+                                    i += 1
+                                    wake = wake or result > 0
+                        del reading[i:]
                     if writing:
                         i = 0
                         for item in writing:
-                            result = item.flush1()
-                            if result is None:
+                            try:
+                                result = item.flush1()
+                            except EnvironmentError as e:
+                                if e.errno not in errnos.WOULDBLOCK:
+                                    raise
                                 witems.add(item)
-                            elif result == -1:
-                                bad.append(item)
-                                wake = True
                             else:
-                                writing[i] = item
-                                i += 1
+                                if result is None:
+                                    witems.add(item)
+                                elif result == -1:
+                                    bad.append(item)
+                                    wake = True
+                                else:
+                                    writing[i] = item
+                                    i += 1
+                        del writing[i:]
                     if wake:
                         cond.notify()
                     if not self._running:
