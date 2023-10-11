@@ -23,98 +23,106 @@
 # but if register via read signal, can it be guaranteed to be
 # registered before the write is handled?: add to w and register via the
 # read signal, means w is never unregistered
-__all__ = ['RPoller', 'WPoller', 'RWPoller']
+__all__ = ['EpollPoller']
 import select
 
 from . import polling
+from jhsiao.ipc import errnos
 
-class EPPoller(object):
+class EpollPoller(polling.Poller):
     r = select.EPOLLIN | select.EPOLLONESHOT
     w = select.EPOLLOUT | select.EPOLLONESHOT
     rw = r | w
     s = select.EPOLLIN
-    bad = select.EPOLLHUP | select.EPOLLERR
-
     def __init__(self):
-        self.items = {}
-        self.poller = select.epoll()
-        self.poll = self.poller.poll
+        super(EpollPoller, self).__init__()
+        self._items = {}
+        self._poller = select.epoll()
 
     def __iter__(self):
-        return iter(self.items.values())
+        return iter(
+            [item for item, mode in self._items.values()])
 
     def __delitem__(self, item):
         fd = item.fileno()
-        if self.items.pop(fd, None) is not None:
-            self.poller.unregister(fd)
+        if self._items.pop(fd, None) is not None:
+            self._poller.unregister(fd)
 
     def __setitem__(self, item, mode):
         fd = item.fileno()
-        self.poller.register(fd, mode)
-        self.items[fd] = item
-
-    def poll(self, timeout=-1):
-        return self.poller.poll(timeout)
+        self._poller.register(fd, mode)
+        self._items[fd] = [item, mode]
 
     def close(self):
+        super(EpollPoller, self).close()
         self.poller.close()
 
-class RPPoller(PPoller, polling.RPoller):
-    def __setitem__(self, item, mode):
-        fd = item.fileno()
-        self.poller.register(fd, self.r)
-        self.items[fd] = item
+    def step(self, timeout=0):
+        items = self._items
+        reading = self._reading
+        writing = self._writing
+        cond = self._cond
+        poller.poll()
+        if timeout is None and (reading or writing):
+            timeout = 0
+        result = poller.poll(timeout)
+        with cond:
+            wake = False
+            if reading:
+                data = self._data
+                i = 0
+                for item in reading:
+                    try:
+                        result = item.readinto1(data)
+                    except EnvironmentError as e:
+                        if e.errno in errnos.WOULDBLOCK:
+                            # rearm
+                        elif e.errno != errnos.EINTR:
+                            raise
+                        else:
+                            reading[i] = item
+                            i += 1
+                    else:
+                        if result is None:
+                            # rearm
+                        elif result == -1:
+                            self._bad.append(item)
+                            wake = True
+                        else:
+                            reading[i] = item
+                            i += 1
+                            wake = wake or result > 0
 
-    def fill(self, result, r, out, bad):
-        i = 0
-        for item in r:
-            result = item.readinto1(out)
-            if result is None:
-                self.poller.modify(item.fileno(), self.r)
-            elif result == -1:
-                bad.append(item)
-                del self[item]
-            else:
-                r[i] = item
-                i += 1
-        del r[i:]
-        for fd, m in result:
-            item = self.items[fd]
-            result = item.readinto1(out)
-            if result == -1:
-                bad.append(item)
-                del self[item]
-            elif result is not None and result != -2:
-                r.append(item)
 
-class WPPoller(PPoller, polling.WPoller):
-    def fill(self, result, w, bad):
-        i = 0
-        for item in w:
-            result = item.flush1()
-            if result is None:
-                fd = item.fileno()
-                self.poller.modify(fd, self.w)
-            elif result < 0:
-                bad.append(item)
-                del self[item]
-            else:
-                if item:
-                    w[i] = item
-                    i += 1
-        del w[i:]
-        for fd, m in result:
-            if m & self.w:
-                item = self.items[fd]
-                result = item.flush1()
-                if result is not None:
-                    if result < 0:
-                        bad.append(item)
-                        del self[item]
-                    elif item:
-                        w.append(item)
-            else:
-                self.items[fd].readinto1(None)
+            for fd, md in result:
+                item, cmd = items[fd]
+                if md & self.r:
+                    try:
+                        result = item.readinto1(data)
+                    except EnvironmentError as e:
+                        if e.errno in errnos.WOULDBLOCK:
+                            # rearm read
+                        elif e.errno == errnos.EINTR:
+                            reading.append(item)
+                            # rearm write?
+                        else:
+                            raise
+                    if result is None:
+                        # reregister
+                    elif result == -1:
+                        # to bad
+                    else:
+                        reading.append(item)
+                if md & self.w:
+                    try:
+                        item.flush1()
+                    except EnvironmentError as e:
+                        if e.errno not in errnos.WOULDBLOCK or e.errno == errnos.EINTR:
+                            raise
+                        else:
+                            raise
+
+                #final modify
 
 class RWPPoller(PPoller, polling.RWPoller):
     def __iter__(self):

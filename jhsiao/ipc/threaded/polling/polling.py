@@ -205,12 +205,7 @@ class Poller(object):
             self._thread.start()
 
     def close(self):
-        """Close the poller.
-
-        Any registered items are left alone and returned.  This means
-        subclasses must override this and return the relevant items.
-        Stops the thread if it was started.
-        """
+        """Close the poller."""
         with self._cond:
             if not self._running and self._thread is None:
                 return
