@@ -259,6 +259,8 @@ class _PosixUtils(object):
             identifier = identifier.encode()
         except AttributeError:
             pass
+        if not identifier.startswith(b'/'):
+            identifier = b'/' + identifier
         fd = self.shm_open(identifier, flags, self.permissions)
         if fd == -1:
             self._throw()
@@ -280,6 +282,8 @@ class _PosixUtils(object):
                 n = shmf.name.encode()
             except AttributeError:
                 n = shmf.name
+            if not n.startswith(b'/'):
+                n = b'/' + n
             if self.shm_unlink(n) == -1:
                 self._throw()
 
@@ -355,7 +359,7 @@ class Shmf(object):
             create = True
             if size == 0:
                 raise ValueError('Name=None requires size > 0.')
-            name = 'shmf' + uuid.uuid4().hex
+            name = '/shmf' + uuid.uuid4().hex
         else:
             if mode is None:
                 mode = 'r'
