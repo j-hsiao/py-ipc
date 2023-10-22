@@ -3,6 +3,24 @@
 # three bits are meaningless in the events field, and will be set in the
 # revents field whenever the corresponding condition is true.)
 #
+# observations:
+# poll performance is proportional to the number of events.  If data is
+# large or constant, then fds will be constantly polled.  EPOLLET
+# reduces number of polled events assuming that sockets are ready until
+# EAGAIN/EWOULDBLOCK.
+#
+# 1. when event is fired all events are fired
+#    ie: data to read, write blocked
+#           poll->EPOLLIN
+#           poll->nothing
+#        remote reads
+#           poll->EPOLLIN|EPOLLOUT
+# 2. modify results in all events being fired again.
+#
+# ex. if get read->modify to remove read from mask
+# but then ET doesn't really do anything...
+# track whether reading or writing individually and ignore redundant?
+#
 # TODO considerations:
 # 1. suppose polling gives HUP/ERR/NVAL, want to unregister it from
 # poller (otherwise it'll keep getting polled)
