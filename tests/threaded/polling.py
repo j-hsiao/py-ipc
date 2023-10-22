@@ -53,13 +53,13 @@ def _test_poller(cls):
 
         c = socket.socket(L.L.family, L.L.type)
         c.connect(L.L.getsockname())
-        poller.step()
+        poller.step(.1)
         results, bad = poller.get(.1)
         assert not results and not bad
         f = c.makefile('rwb')
         f.write(b'hello world\n')
         f.flush()
-        poller.step()
+        poller.step(.1)
 
         results, bad = poller.get(.1)
         assert len(results) == 1
@@ -69,13 +69,13 @@ def _test_poller(cls):
         assert not bad
         results[0][0].write(b'hello to you too!\n')
         poller.flush(results[0][0])
-        poller.step()
-        poller.step()
+        poller.step(.1)
+        poller.step(.1)
         response = f.readline()
         assert response == b'hello to you too!\n'
         f.close()
         c.close()
-        poller.step(1)
+        poller.step(.1)
         results, bad = poller.get(.1)
         assert not results and bad
         assert len(bad) == 1
