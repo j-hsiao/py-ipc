@@ -93,7 +93,7 @@ class SelectPoller(polling.Poller):
                         elif result == -1:
                             self._bad.append(item)
                             wake = True
-                        else:
+                        elif item:
                             writing[i] = item
                             i += 1
                 del writing[i:]

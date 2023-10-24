@@ -48,8 +48,8 @@ from . import polling
 from jhsiao.ipc import errnos
 
 class EpollPoller(polling.Poller):
-    r = select.EPOLLIN | select.EPOLLONESHOT
-    w = select.EPOLLOUT | select.EPOLLONESHOT
+    r = select.EPOLLIN | select.EPOLLET
+    w = select.EPOLLOUT | select.EPOLLET
     rw = r | w
     s = select.EPOLLIN
     def __init__(self):
@@ -59,7 +59,7 @@ class EpollPoller(polling.Poller):
 
     def __iter__(self):
         return iter(
-            [item for item, mode in self._items.values()])
+            [item for item, readable, writable in self._items.values()])
 
     def __delitem__(self, item):
         fd = item.fileno()
@@ -69,22 +69,32 @@ class EpollPoller(polling.Poller):
     def __setitem__(self, item, mode):
         fd = item.fileno()
         self._poller.register(fd, mode)
-        self._items[fd] = [item, mode]
+        self._items[fd] = [item, False, True]
 
     def close(self):
         super(EpollPoller, self).close()
         self.poller.close()
 
     def step(self, timeout=0):
+        # TODO: poll just changes file state (if applicable)
         items = self._items
         reading = self._reading
         writing = self._writing
         cond = self._cond
-        poller.poll()
         if timeout is None and (reading or writing):
             timeout = 0
         result = poller.poll(timeout)
+        R = self.r
+        W = self.w
         with cond:
+            for fd, md in result:
+                L = items[fd]
+                if md & R and not L[1]:
+                    reading.append(L[0])
+                    L[1] = True
+                if md & W and not L[2]:
+                    writing.append(L[0])
+                    L[2] = True
             wake = False
             if reading:
                 data = self._data
@@ -94,15 +104,15 @@ class EpollPoller(polling.Poller):
                         result = item.readinto1(data)
                     except EnvironmentError as e:
                         if e.errno in errnos.WOULDBLOCK:
-                            # rearm
-                        elif e.errno != errnos.EINTR:
-                            raise
-                        else:
+                            items[item.fileno()][1] = False
+                        elif e.errno == errnos.EINTR:
                             reading[i] = item
                             i += 1
+                        else:
+                            raise
                     else:
-                        if result is None:
-                            # rearm
+                        if result is None or result == -2:
+                            items[item.fileno()][1] = False
                         elif result == -1:
                             self._bad.append(item)
                             wake = True
@@ -110,37 +120,29 @@ class EpollPoller(polling.Poller):
                             reading[i] = item
                             i += 1
                             wake = wake or result > 0
-
-
-            for fd, md in result:
-                item, cmd = items[fd]
-                if md & self.r:
+            if writing:
+                i = 0
+                for item in writing:
                     try:
-                        result = item.readinto1(data)
+                        result = item.flush1()
                     except EnvironmentError as e:
                         if e.errno in errnos.WOULDBLOCK:
-                            # rearm read
+                            items[item.fileno()][2] = False
                         elif e.errno == errnos.EINTR:
-                            reading.append(item)
-                            # rearm write?
+                            writing[i] = item
+                            i += 1
                         else:
                             raise
-                    if result is None:
-                        # reregister
-                    elif result == -1:
-                        # to bad
                     else:
-                        reading.append(item)
-                if md & self.w:
-                    try:
-                        item.flush1()
-                    except EnvironmentError as e:
-                        if e.errno not in errnos.WOULDBLOCK or e.errno == errnos.EINTR:
-                            raise
-                        else:
-                            raise
+                        if result is None:
+                            items[item.fileno()][2] = False
+                        elif result == -1:
+                            self._bad.append(item)
+                            wake = True
+                        elif item:
+                            writing[i] = item
+                            i += 1
 
-                #final modify
 
 class RWPPoller(PPoller, polling.RWPoller):
     def __iter__(self):

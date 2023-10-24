@@ -119,8 +119,8 @@ class Poller(object):
         """
         with self._cond:
             self._regq.append(args)
-        self._rwpair.write(b'1')
-        self._rwpair.flush()
+            self._rwpair.write(b'1')
+            self._rwpair.flush()
 
     def unregister(self, item):
         """Threadsafe unregister an item.
@@ -134,20 +134,36 @@ class Poller(object):
         """
         with self._cond:
             self._regq.append((item, None))
-        self._rwpair.write(b'1')
-        self._rwpair.flush()
+            self._rwpair.write(b'1')
+            self._rwpair.flush()
 
-    def flush(self, obj):
-        """Register object for flushing until fully flushed or error."""
+    def write(self, obj, data):
+        """Register write to obj.
+
+        write/flush/flush1 calls aren't necessarily threadsafe so just
+        perform all writing and flushing in separate thread.
+        """
         with self._cond:
-            self._flushq.append(obj)
-        self._rwpair.write(b'1')
-        self._rwpair.flush()
+            self._flushq.append((obj, data))
+            self._rwpair.write(b'1')
+            self._rwpair.flush()
+
+    def writelines(self, obj, lines):
+        """Register to write multiple items.
+
+        for line in lines:
+            write(obj, line)
+        """
+        with self._cond:
+            self.flushq.extend([(obj, data) for data in lines])
+            self._rwpair.write(b'1'*len(liens))
+            self._rwpair.flush()
 
     def readinto1(self, out):
         """For internal use.
 
         Complete register/unregister/flush operations.
+        This should only be called in loop or step()
         """
         with self._cond:
             q = self._regq
@@ -160,7 +176,10 @@ class Poller(object):
                 del self[item]
             else:
                 self[item] = mode
-        self._writing.extend(flush)
+        # TODO: what if already in self._writing?
+        for obj, data in flushq:
+            obj.write(data)
+            self._writing.append(obj)
 
     def __call__(self):
         """For internal use.

@@ -67,8 +67,7 @@ def _test_poller(cls):
         assert results[0][0] is L.accepted[0]
         assert results[0][1] == b'hello world\n'
         assert not bad
-        results[0][0].write(b'hello to you too!\n')
-        poller.flush(results[0][0])
+        poller.write(results[0][0], b'hello to you too!\n')
         poller.step(.1)
         poller.step(.1)
         response = f.readline()
@@ -111,8 +110,7 @@ def _test_poller_thread(cls):
         assert results[0][0] is L.accepted[0]
         assert results[0][1] == b'hello world\n'
         assert not bad
-        results[0][0].write(b'hello to you too!\n')
-        poller.flush(results[0][0])
+        poller.write(results[0][0], b'hello to you too!\n')
         response = f.readline()
         assert response == b'hello to you too!\n'
         f.close()
