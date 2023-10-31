@@ -6,11 +6,15 @@ import sys
 from . import polling
 from jhsiao.ipc import errnos
 
+class AppendSet(set):
+    append = set.add
+
 class SelectPoller(polling.Poller):
     r = 1
     w = 2
     rw = 3
     s = r
+    handlecontainer = AppendSet
 
     def __init__(self, reimpl=False):
         super(SelectPoller, self).__init__()
@@ -43,60 +47,63 @@ class SelectPoller(polling.Poller):
         r, w, x = select.select(ritems, witems, (), timeout)
         if w:
             witems.difference_update(w)
-            writing.extend(w)
+            writing.update(w)
         if r:
             ritems.difference_update(r)
-            reading.extend(r)
+            reading.update(r)
         with cond:
             wake = False
             if reading:
                 data = self._data
-                i = 0
+                sync = []
                 for item in reading:
                     try:
                         result = item.readinto1(data)
                     except EnvironmentError as e:
                         if e.errno in errnos.WOULDBLOCK:
                             ritems.add(item)
+                            sync.append(item)
                         elif e.errno != errnos.EINTR:
                             raise
-                        else:
-                            reading[i] = item
-                            i += 1
                     else:
                         if result is None or result == -2:
                             ritems.add(item)
+                            sync.append(item)
                         elif result == -1:
                             self._bad.append(item)
+                            sync.append(item)
+                            witems.discard(item)
+                            writing.discard(item)
                             wake = True
                         else:
-                            reading[i] = item
-                            i += 1
                             wake = wake or result > 0
-                del reading[i:]
+                if sync:
+                    reading.difference_update(sync)
             if writing:
-                i = 0
+                sync = []
                 for item in writing:
                     try:
                         result = item.flush1()
                     except EnvironmentError as e:
                         if e.errno in errnos.WOULDBLOCK:
                             witems.add(item)
+                            sync.append(item)
                         elif e.errno != errnos.EINTR:
                             raise
-                        else:
-                            writing[i] = item
-                            i += 1
                     else:
                         if result is None:
                             witems.add(item)
+                            sync.append(item)
                         elif result == -1:
                             self._bad.append(item)
+                            ritems.discard(item)
+                            reading.discard(item)
+                            sync.append(item)
                             wake = True
-                        elif item:
-                            writing[i] = item
-                            i += 1
-                del writing[i:]
+                        elif not item:
+                            sync.append(item)
+                if sync:
+                    writing.difference_update(sync)
             if wake:
                 cond.notify()
             return self._running

@@ -90,11 +90,10 @@ class Poller(object):
             (readinto1() should return -2)
             readinto1() returning -2 implies the object was registered
             with s.
+        handlecontainer: class supporting append()
+            used to hold current reading/writing objects (reduce polling via nonblock)
     """
     def __init__(self):
-        cls = getattr(self, 'cls', None)
-        if cls is not None:
-            self.poller = cls()
         self._cond = threading.Condition()
         self._running = True
         self._thread = None
@@ -102,8 +101,9 @@ class Poller(object):
         self.fileno = self._rwpair.fileno
         self._data = []
         self._bad = []
-        self._reading = []
-        self._writing = []
+        handlecontainer = getattr(self, 'handlecontainer', list)
+        self._reading = handlecontainer()
+        self._writing = handlecontainer()
         self._regq = []
         self._flushq = []
 
@@ -164,22 +164,21 @@ class Poller(object):
 
         Complete register/unregister/flush operations.
         This should only be called in loop or step()
+        Assume _cond is held when called
         """
-        with self._cond:
-            q = self._regq
-            flush = self._flushq
-            self._regq = []
-            self._flushq = []
+        q = self._regq
+        flush = self._flushq
+        self._regq = []
+        self._flushq = []
         self._rwpair.readinto(bytearray(len(q) + len(flush)))
         for item, mode in q:
             if mode is None:
                 del self[item]
             else:
                 self[item] = mode
-        # TODO: what if already in self._writing?
-        for obj, data in flushq:
-            obj.write(data)
+        for obj, data in flush:
             self._writing.append(obj)
+            obj.write(data)
 
     def __call__(self):
         """For internal use.
@@ -199,7 +198,9 @@ class Poller(object):
         =======
         result: list of 2-tuple
             Each tuple is (data, object).  data is the data that was
-            received.  If it is None
+            received.
+        bad: list of bad objects.
+            These result in some kind of error and are unregistered.
         """
         with self._cond:
             if self._data or self._bad or _wait_cond(

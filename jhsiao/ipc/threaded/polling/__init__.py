@@ -1,4 +1,12 @@
+__all__ = ['SelectPoller']
+
+from .select import SelectPoller
+
 import select as _select
+if hasattr(_select, 'epoll'):
+    from .epoll import EpollPoller
+    __all__.append('EpollPoller')
+
 # __all__ = ['RPoller', 'WPoller', 'RWPoller']
 # if hasattr(select, 'select'):
 #     from .select import *

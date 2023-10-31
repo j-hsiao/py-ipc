@@ -33,7 +33,7 @@ class Listener(object):
         s, a = self.L.accept()
         s.settimeout(0)
         thing = RWPair(sockfile.Sockfile(s, 'r+'))
-        self.poller[thing] = self.poller.r
+        self.poller[thing] = self.poller.rw
         self.accepted.append(thing)
         return -2
 
@@ -165,15 +165,22 @@ def _test_receive_speed(cls):
         poller.close()
         L.close()
 
-from jhsiao.ipc.threaded.polling import select
+from jhsiao.ipc.threaded import polling
 def test_poller_select():
-    _test_poller(select.SelectPoller)
+    _test_poller(polling.SelectPoller)
 
 def test_poller_thread_select():
-    _test_poller_thread(select.SelectPoller)
+    _test_poller_thread(polling.SelectPoller)
 
 def test_receive_speed_select():
-    _test_receive_speed(select.SelectPoller)
+    _test_receive_speed(polling.SelectPoller)
 
-if platform.system() != 'Windows':
-    pass
+if hasattr(polling, 'EpollPoller'):
+    def test_poller_epoll():
+        _test_poller(polling.EpollPoller)
+
+    def test_poller_thread_epoll():
+        _test_poller_thread(polling.EpollPoller)
+
+    def test_receive_speed_epoll():
+        _test_receive_speed(polling.EpollPoller)
