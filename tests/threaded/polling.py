@@ -165,22 +165,55 @@ def _test_receive_speed(cls):
         poller.close()
         L.close()
 
+def _test_multirecv_speed(cls):
+    poller = cls()
+    poller.start()
+    L = Listener(poller)
+    count = 100000
+    nclients = 5
+    line = b'hello world!\n'
+    try:
+        t = threading.Thread(target=receive, args=(poller, count*nclients))
+        t.start()
+        cs = []
+        fs = []
+        try:
+            for i in range(nclients):
+                c = socket.socket(L.L.family, L.L.type)
+                c.connect(L.L.getsockname())
+                cs.append(c)
+                fs.append(c.makefile('rwb'))
+            now = time.time()
+            for i in range(count):
+                for f in fs:
+                    f.write(line)
+            for f in fs:
+                f.flush()
+            t.join()
+            print('elapsed', time.time() - now)
+        finally:
+            for f in fs:
+                f.close()
+            for c in cs:
+                c.close()
+        results, bads = poller.get()
+        assert bads
+        for bad in bads:
+            bad.close()
+    finally:
+        poller.close()
+        L.close()
+
 from jhsiao.ipc.threaded import polling
-def test_poller_select():
-    _test_poller(polling.SelectPoller)
 
-def test_poller_thread_select():
-    _test_poller_thread(polling.SelectPoller)
+def _make_tests(name):
+    cls = getattr(polling, name)
+    for gentest in ('_test_poller', '_test_poller_thread', '_test_receive_speed', '_test_multirecv_speed'):
+        def wrapped():
+            globals()[gentest](cls)
+        globals()[gentest.replace('_test', 'test_{}'.format(cls.__name__))] = wrapped
 
-def test_receive_speed_select():
-    _test_receive_speed(polling.SelectPoller)
-
-if hasattr(polling, 'EpollPoller'):
-    def test_poller_epoll():
-        _test_poller(polling.EpollPoller)
-
-    def test_poller_thread_epoll():
-        _test_poller_thread(polling.EpollPoller)
-
-    def test_receive_speed_epoll():
-        _test_receive_speed(polling.EpollPoller)
+_make_tests('SelectPoller')
+for optional in ('EpollPoller', ):
+    if hasattr(polling, optional):
+        _make_tests(optional)
