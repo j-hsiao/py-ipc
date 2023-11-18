@@ -51,8 +51,10 @@ class GenPoller(polling.Poller)
         self._rwpair.readinto(bytearray(len(q) + len(flush)))
         for item, mode in q:
             if mode is None:
-                del self[item]
-                self._sync = True
+                fd = item.fileno()
+                L = self._items.pop(fd, None)
+                if L is not None:
+                    self._sync = self._sync or L[1] or L[2] and L[0]
             else:
                 self[item] = mode
         for obj, data in flush:

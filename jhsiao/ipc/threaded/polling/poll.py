@@ -42,6 +42,8 @@ class PPoller(genpolling.GenPoller):
     wo = w = select.POLLOUT
     rw = r|w
     s = r
+    nr = ~r
+    nw = ~w
 
     def step(self, timeout=0):
         items = self._items
@@ -49,27 +51,25 @@ class PPoller(genpolling.GenPoller):
         writing = self._writing
         cond = self._cond
         if timeout is None:
-            if reading or writing:
-                timeout = 0
-            else:
-                timeout = -1
+            timeout = 0 if reading or writing else -1
         elif timeout > 0:
             timeout = int(timeout * MSECPERSEC)
         for fd, md in self._poller.poll(timeout):
             L = items[fd]
-            rmmask = 0
             if md & self.ro and not L[1]:
                 L[1] = True
                 reading.append(L[0])
-                rmmask |= self.ro
+                L[3] &= self.nr
             if md & self.wo and not L[2]:
                 L[2] = True
                 if L[0]:
                     writing.append(L[0])
-                rmmask |= self.wo
-            if rmmask:
-                self._poller.modify(fd, ~rmmask & L[3])
-        with cond
+                L[3] &= self.nw
+            self._poller.modify(fd, L[3])
+        with cond:
+            for item in reading:
+                try:
+                    
 
 
 if hasattr(select, 'devpoll'):
