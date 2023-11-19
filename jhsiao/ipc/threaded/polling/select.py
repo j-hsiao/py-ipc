@@ -36,6 +36,19 @@ class SelectPoller(polling.Poller):
         if mode & self.w:
             self._witems.add(item)
 
+    def readinto1(self, out):
+        q = self._taskq
+        self._taskq = []
+        self._rwpair.readinto(bytearray(len(q)))
+        for task, item, data in q:
+            if task == self.WRITE:
+                self._writing.append(item)
+                item.write(data)
+            elif task == self.REGISTER:
+                self[item] = data
+            elif task == self.UNREGISTER:
+                del self[item]
+
     def step(self, timeout=0):
         ritems = self._ritems
         witems = self._witems

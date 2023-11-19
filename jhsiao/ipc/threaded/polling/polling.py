@@ -93,6 +93,9 @@ class Poller(object):
         handlecontainer: class supporting append()
             used to hold current reading/writing objects (reduce polling via nonblock)
     """
+    REGISTER = 0
+    UNREGISTER = 1
+    WRITE = 2
     def __init__(self):
         self._cond = threading.Condition()
         self._running = True
@@ -104,10 +107,9 @@ class Poller(object):
         handlecontainer = getattr(self, 'handlecontainer', list)
         self._reading = handlecontainer()
         self._writing = handlecontainer()
-        self._regq = []
-        self._flushq = []
+        self._taskq = []
 
-    def register(self, *args):
+    def register(self, obj, mode):
         """Threadsafe register an item.
 
         It will take effect the next call to step() or the next
@@ -118,7 +120,7 @@ class Poller(object):
             mode: self.[r|w|rw|s]
         """
         with self._cond:
-            self._regq.append(args)
+            self._taskq.append((self.REGISTER, obj, mode))
             self._rwpair.write(b'1')
             self._rwpair.flush()
 
@@ -133,7 +135,7 @@ class Poller(object):
             mode: self.[r|w|rw|s]
         """
         with self._cond:
-            self._regq.append((item, None))
+            self._taskq.append((self.UNREGISTER, item, None))
             self._rwpair.write(b'1')
             self._rwpair.flush()
 
@@ -142,9 +144,10 @@ class Poller(object):
 
         write/flush/flush1 calls aren't necessarily threadsafe so just
         perform all writing and flushing in separate thread.
+        Undefined if not registered for write polling.
         """
         with self._cond:
-            self._flushq.append((obj, data))
+            self._taskq.append((self.WRITE, obj, data))
             self._rwpair.write(b'1')
             self._rwpair.flush()
 
@@ -153,32 +156,25 @@ class Poller(object):
 
         for line in lines:
             write(obj, line)
+        Undefined if not registered for write polling.
+        * Infinite generators not supported
         """
         with self._cond:
-            self.flushq.extend([(obj, data) for data in lines])
-            self._rwpair.write(b'1'*len(liens))
+            total = 0
+            for line in lines:
+                self._taskq.append((self.WRITE, obj, line))
+                total += 1
+            self._rwpair.write(b'1'*total)
             self._rwpair.flush()
 
     def readinto1(self, out):
         """For internal use.
 
-        Complete register/unregister/flush operations.
+        Complete register/unregister/write operations.
         This should only be called in loop or step()
         Assume _cond is held when called
         """
-        q = self._regq
-        flush = self._flushq
-        self._regq = []
-        self._flushq = []
-        self._rwpair.readinto(bytearray(len(q) + len(flush)))
-        for item, mode in q:
-            if mode is None:
-                del self[item]
-            else:
-                self[item] = mode
-        for obj, data in flush:
-            self._writing.append(obj)
-            obj.write(data)
+        raise NotImplementedError
 
     def __call__(self):
         """For internal use.
@@ -256,8 +252,14 @@ class Poller(object):
         raise NotImplementedError
 
     def __delitem__(self, item):
-        """Directly unregister an item.  Thread unsafe."""
+        """Internal use.
+
+        Remove an item from polling.
+        """
         raise NotImplementedError
     def __setitem__(self, item, mode):
-        """Directly register an item.  Thread unsafe."""
+        """Internal use.
+
+        Add an item to polling.
+        """
         raise NotImplementedError

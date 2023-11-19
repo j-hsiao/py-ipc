@@ -36,7 +36,6 @@ from . import genpolling
 from jhsiao.ipc import errnos
 
 
-MSECPERSEC = 1000
 class PPoller(genpolling.GenPoller):
     ro = r = select.POLLIN
     wo = w = select.POLLOUT
@@ -45,31 +44,33 @@ class PPoller(genpolling.GenPoller):
     nr = ~r
     nw = ~w
 
-    def step(self, timeout=0):
-        items = self._items
-        reading = self._reading
-        writing = self._writing
-        cond = self._cond
-        if timeout is None:
-            timeout = 0 if reading or writing else -1
-        elif timeout > 0:
-            timeout = int(timeout * MSECPERSEC)
+    TIMESCALE = 1000
+
+    def _new_item(self, item, mode):
+        return [item, False, int(bool(mode & self.wo)), mode]
+
+    def _update_mode(self, L, m):
+        L[3] = m
+
+    def _reset_mode(self, fd, L, m):
+        L[3] |= m
+        self._poller.modify(fd, L[3])
+
+    def _poll(self, items, reading, writing, timeout):
         for fd, md in self._poller.poll(timeout):
             L = items[fd]
-            if md & self.ro and not L[1]:
+            if not L[1] and md & self.ro:
                 L[1] = True
                 reading.append(L[0])
                 L[3] &= self.nr
-            if md & self.wo and not L[2]:
-                L[2] = True
+            if not L[2] and md & self.wo:
                 if L[0]:
+                    L[2] = 2
                     writing.append(L[0])
+                else:
+                    L[2] = 1
                 L[3] &= self.nw
             self._poller.modify(fd, L[3])
-        with cond:
-            for item in reading:
-                try:
-                    
 
 
 if hasattr(select, 'devpoll'):
