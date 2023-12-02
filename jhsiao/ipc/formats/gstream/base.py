@@ -16,6 +16,7 @@ class SwapList(object):
         return len(self.l)
 
     def swap(self):
+        """Create a new list and return the old one."""
         ret = self.l
         self.l = []
         self.append = self.l.append
@@ -104,3 +105,27 @@ class Reader(object):
                 return result if result else -1
             else:
                 return None
+
+def tryreader(func, verbose):
+    """Wrap a readinto function with try/except.
+
+    Converts errors to -1.  EAGAIN, EWOULDBLOCK becomes None.
+    EINTR is retried immediately
+    """
+    def tryread(buf):
+        try:
+            return func(buf)
+        except EnvironmentError as e:
+            if e.errno in errnos.WOULDBLOCK:
+                return None
+            elif e.errno == errnos.EINTR:
+                return tryread(buf)
+            else:
+                if verbose:
+                    traceback.print_exc()
+                return -1
+        except Exception:
+            if verbose:
+                traceback.print_exc()
+            return -1
+    return tryread

@@ -1,7 +1,8 @@
+import timeit
 
 from jhsiao.ipc.formats.gstream import (
-    gchunk,
     gline,
+    gchunk,
     gchunkpkl
 )
 
@@ -40,6 +41,14 @@ def test_gchunk():
                 break
         assert out == messages
 
+        del out[:]
+        dummy.seek(0)
+        for result in gchunk.chunk_iter(dummy, out, False, buffersize=9):
+            if result is not None and result < 0:
+                break
+        assert out == messages
+
+
 
 
 def test_gchunkpkl():
@@ -75,17 +84,96 @@ def test_gline():
         dummy.writelines(messages)
         dummy.seek(0)
         out = []
-        r = gline.GLineReader(dummy, out, True, buffersize=3)
-        result = r.read()
-        while result is None or result >= 0:
-            result = r.read()
+        r = gline.line_iter(dummy, out, True, buffersize=3)
+        while next(r) != -1:
+            pass
         assert out == messages
 
-        print(out)
-        del out[:]
-        dummy.seek(0)
-        for result in r.readit():
-            if result is not None and result < 0:
-                break
-        print(out)
-        assert out == messages
+def _run_timings(tests, setup, repeat, number):
+    for name, script in tests.items():
+        print(
+            name,
+            min(timeit.repeat(script, setup, repeat=repeat, number=number)))
+
+
+def test_timegchunk():
+    setup = r'''import io
+from jhsiao.ipc.formats.gstream import gchunk
+from jhsiao.ipc.formats.stream import chunk
+import struct
+dummy = io.BytesIO()
+dummy2 = io.BytesIO()
+for msg in [b'hello', b'world', b'hello world']:
+    dummy.write(struct.pack('<Q', len(msg)))
+    dummy.write(msg)
+    dummy2.write(struct.pack('>BQ', 3, len(msg)))
+    dummy2.write(msg)
+
+v = dummy.getvalue()
+v2 = dummy2.getvalue()
+for i in range(500):
+    dummy.write(v)
+    dummy2.write(v2)'''
+    script1 = '''out = []
+dummy.seek(0)
+r = gchunk.GChunkReader(dummy, out, True)
+result = r.read()
+while result is None or result >= 0:
+    result = r.read()
+'''
+    script2 = '''out = []
+dummy.seek(0)
+r = gchunk.GChunkReader(dummy, out, True)
+for result in r.readit():
+    if result is not None and result < 0:
+        break'''
+    script3 = '''out = []
+dummy2.seek(0)
+r = chunk.Reader(dummy2)
+while r.readinto1(out) != -1:
+    pass
+r.detach()'''
+    script4 = '''out = []
+dummy.seek(0)
+it = gchunk.chunk_iter(dummy, out, True)
+while next(it) != -1:
+    pass'''
+    _run_timings(
+        dict(
+            iter1=script1, read=script2,
+            readinto1=script3, iter2=script4),
+        setup, 10, 100)
+
+def test_timegline():
+    setup = r'''import io
+from jhsiao.ipc.formats.gstream import gline
+from jhsiao.ipc.formats.stream import line
+dummy = io.BytesIO()
+messages = [b'hello\n', b'world\n', b'hello world\n', b'the end but no newline\n'] * 1000
+dummy.writelines(messages)'''
+    script1 = '''out = []
+dummy.seek(0)
+reader = gline.line_iter(dummy, out, True)
+for result in reader:
+    if result == -1:
+        break
+'''
+    script2 = '''out = []
+dummy.seek(0)
+reader = gline.GLineReader(dummy, out, True)
+for result in reader.readit():
+    if result == -1:
+        break
+'''
+
+    script4 = '''out = []
+dummy.seek(0)
+reader = line.Reader(dummy)
+while reader.readinto1(out) != -1:
+    pass
+reader.detach()
+'''
+    _run_timings(
+        dict(rawiter=script1, senditer=script2, readinto1=script4),
+        setup, 10, 100
+    )
