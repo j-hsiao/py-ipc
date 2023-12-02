@@ -35,7 +35,7 @@ class GNumpyReader(base.Reader):
     def _iter(self, allow_pickle=False):
         buf = bytearray(128)
         view = memoryview(buf)
-        out = self._out
+        out = self.out
         start = stop = 0
         while 1:
             versionend = start + _VERSION_LEN

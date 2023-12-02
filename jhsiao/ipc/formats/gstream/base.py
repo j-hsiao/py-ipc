@@ -30,22 +30,50 @@ class Reader(object):
         verbose: bool, be verbose.
         kwargs: kwargs for _iter.  Different for each subclass.
         """
-        self._out = output
-        self._f = f
         self._verbose = verbose
-        self._it = self._iter(**kwargs)
-        self._buf = next(self._it)
+        self.out = output
+        self.f = f
+        self.state = [f.readinto, self._iter(**kwargs)]
+        self.state.append(next(self.state[1]))
 
     def _iter(self):
         """Internal iterator to handle processing.
 
-        It should yield a buffer to read into.  send() should be
-        called to pass in the amount of data read into the buffer.
-        If None is yielded, that indicates EOF and reader should be
-        closed.  Send() should only ever be called with non-negative
-        integers.
+        Yield buffers that need to be filled.  send() should be used
+        instead of next() to send the number of bytes that were read
+        into the buffer.  In the event of wouldblock, nothing should be
+        sent to the iterator.  If the stream ends, 0 will be sent to the
+        iterator.
+
+        This means that the iterator should only receive positive ints
+        or None.
         """
         raise NotImplementedError
+
+    def readit(self):
+        """Iterator for handling steps."""
+        readinto, it, buf = self.state
+        while 1:
+            try:
+                result = readinto(buf)
+            except EnvironmentError as e:
+                if e.errno in errnos.WOULDBLOCK:
+                    yield None
+                elif e.errno == errnos.EINTR:
+                    return 0
+                else:
+                    return -1
+            else:
+                if result is None:
+                    yield None
+                else:
+                    try:
+                        buf = it.send(result)
+                    except Exception:
+                        if self._verbose:
+                            traceback.print_exc()
+                        return -1
+                    yield result if result else -1
 
     def read(self):
         """Read a little.
@@ -54,8 +82,10 @@ class Reader(object):
         Otherwise, returns the number of bytes read.
         -1 implies error or EOF
         """
+        state = self.state
+        readinto, it, buf = state
         try:
-            result = self._f.readinto(self._buf)
+            result = readinto(buf)
         except EnvironmentError as e:
             if e.errno in errnos.WOULDBLOCK:
                 return None
@@ -66,7 +96,7 @@ class Reader(object):
         else:
             if result is not None:
                 try:
-                    self._buf = self._it.send(result)
+                    state[2] = it.send(result)
                 except Exception:
                     if self._verbose:
                         traceback.print_exc()

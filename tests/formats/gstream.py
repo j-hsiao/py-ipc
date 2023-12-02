@@ -33,6 +33,15 @@ def test_gchunk():
             result = r.read()
         assert out == messages
 
+        del out[:]
+        dummy.seek(0)
+        for result in r.readit():
+            if result is not None and result < 0:
+                break
+        assert out == messages
+
+
+
 def test_gchunkpkl():
     import pickle
     import io
@@ -52,6 +61,13 @@ def test_gchunkpkl():
             result = r.read()
         assert out == messages
 
+        del out[:]
+        dummy.seek(0)
+        for result in r.readit():
+            if result is not None and result < 0:
+                break
+        assert out == messages
+
 def test_gline():
     import io
     with io.BytesIO() as dummy:
@@ -63,4 +79,13 @@ def test_gline():
         result = r.read()
         while result is None or result >= 0:
             result = r.read()
+        assert out == messages
+
+        print(out)
+        del out[:]
+        dummy.seek(0)
+        for result in r.readit():
+            if result is not None and result < 0:
+                break
+        print(out)
         assert out == messages

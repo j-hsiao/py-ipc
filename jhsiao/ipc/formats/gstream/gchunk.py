@@ -6,15 +6,25 @@ from . import base
 
 
 class GChunkReader(base.Reader):
+    """Process chunks of bytes.
+
+    _process() should be a callable with 1 argument, the bytes to
+    process and defaults to memoryview.tobytes
+    """
     _process = staticmethod(memoryview.tobytes)
 
     def _iter(self, buffersize=io.DEFAULT_BUFFER_SIZE, size='<Q'):
+        """Iterator for parsing chunks of data.
+
+        buffersize: size of the buffer.
+        size: struct.Struct string for parsing the size of a chunk.
+        """
         s = struct.Struct(size)
         buf = bytearray(max(buffersize, s.size))
         view = memoryview(buf)
         start = end = 0
         _process = self._process
-        out = self._out
+        out = self.out
         while 1:
             target = start + s.size
             if target > len(buf):

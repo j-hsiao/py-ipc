@@ -1,13 +1,12 @@
-"""Stream formats using generators.
+"""Implement reading/writing via generators.
 
-yield will return None if next(), or the value if .send() is used.
-This allows pause/resume of code when yield is encountered.
+Using generators automatically saves the current step in the generator.
+Otherwise, each call would need to re-check what the next step is
+explicitly.  This might simplify some code.  Test performance diffs.
 
-Read generators should yield a buffer to read into.
-.send() should be used to communicate the amount of bytes read.
-
-Writers...
+For writing, this probably isn't as necessary since it just writes
+chunks of bytes.  There generally is only 2 states: has data to write or
+no data to write.
 """
 
-class Reader(object):
-    pass
+# TODO: merge gstream/stream?

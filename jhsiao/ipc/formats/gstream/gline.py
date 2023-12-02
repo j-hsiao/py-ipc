@@ -11,12 +11,15 @@ class GLineReader(base.Reader):
         view = memoryview(buf)
         start = stop = 0
         process = self._process
-        out = self._out
+        out = self.out
         while 1:
             nstop = stop + (yield view[stop:])
             if stop == nstop:
-                out.append(process(view[start:stop]))
-                yield None
+                while stop == nstop:
+                    if start < stop:
+                        out.append(process(view[start:stop]))
+                    start = stop = 0
+                    nstop = yield view
             pos = buf.find(end, stop, nstop)
             while pos >= 0:
                 pos += len(end)
