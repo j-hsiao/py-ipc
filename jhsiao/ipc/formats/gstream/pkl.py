@@ -20,12 +20,13 @@ opcode: class representing the op code
 
 opcode.arg: class representing an argument
     name, n, reader
-from observation:
-    n: int, >= 0 = number of bytes for the argument
-    -1: variable length until newline?, but some is til 2nd newline
-    -2: 1 byte length followed by length bytes
-    -3: 4 byte length followed by length bytes
-    -4: same as -3
-    -5: 8 byte length followed by length bytes
-
+n: number of bytes or variable if negative:
+    UP_TO_NEWLINE: -1, to next (and including) '\n'
+        ending with _pair is to 2nd '\n'
+    TAKEN_FROM_ARGUMENT1: -2, 1 byte uint length + length bytes
+    TAKEN_FROM_ARGUMENT4: -3, 4 byte int length + length bytes
+    TAKEN_FROM_ARGUMENT4U: -4, 4 byte uint length + length bytes
+    TAKEN_FROM_ARGUMENT8U: -5, 8 byte uint length + length bytes
+    (all little endian)
 """
+
