@@ -48,6 +48,26 @@ def test_gchunk():
                 break
         assert out == messages
 
+        del out[:]
+        dummy.seek(0)
+        for result in gchunk.chunk_iter2(dummy, out, False, buffersize=9):
+            if result is not None and result < 0:
+                break
+        assert out == messages
+
+        del out[:]
+        dummy.seek(0)
+        for result in gchunk.chunk_iter3(dummy, out, False, buffersize=9):
+            if result is not None and result < 0:
+                break
+        assert out == messages
+
+        del out[:]
+        dummy.seek(0)
+        for result in gchunk.chunk_iter4(dummy, out, False, buffersize=9):
+            if result is not None and result < 0:
+                break
+        assert out == messages
 
 
 
@@ -138,10 +158,27 @@ dummy.seek(0)
 it = gchunk.chunk_iter(dummy, out, True)
 while next(it) != -1:
     pass'''
+    script5 = '''out = []
+dummy.seek(0)
+it = gchunk.chunk_iter2(dummy, out, True)
+while next(it) != -1:
+    pass'''
+    script6 = '''out = []
+dummy.seek(0)
+it = gchunk.chunk_iter3(dummy, out, True)
+while next(it) != -1:
+    pass'''
+    script7 = '''out = []
+dummy.seek(0)
+it = gchunk.chunk_iter3(dummy, out, True)
+while next(it) != -1:
+    pass'''
     _run_timings(
         dict(
             iter1=script1, read=script2,
-            readinto1=script3, iter2=script4),
+            readinto1=script3, iter2=script4,
+            yieldfrom=script5, samesubgen=script6,
+            noreadsubfunc=script7),
         setup, 10, 100)
 
 def test_timegline():
