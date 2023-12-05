@@ -60,10 +60,9 @@ class Reader(object):
             except EnvironmentError as e:
                 if e.errno in errnos.WOULDBLOCK:
                     yield None
-                elif e.errno == errnos.EINTR:
-                    return 0
-                else:
-                    return -1
+                elif e.errno != errnos.EINTR:
+                    yield -1
+                    return
             else:
                 if result is None:
                     yield None
@@ -73,7 +72,8 @@ class Reader(object):
                     except Exception:
                         if self._verbose:
                             traceback.print_exc()
-                        return -1
+                        yield -1
+                        return
                     yield result if result else -1
 
     def read(self):
