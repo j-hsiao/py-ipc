@@ -90,6 +90,20 @@ def stopop(buf, view, codepos, end):
                 codepos = sz_stop + size.unpack_from(view, sz_start)[0]
     return codepos
 
+def pkl_iter(f, out, verbose=False, buffersize=io.DEFAULT_BUFFER_SIZE):
+    """Iterate on a stream of python pickles.
+
+    f: file object.
+    out: output container, should support `.append()`
+    verbose: bool, print if errors.
+    buffersize: initial buffer size.
+    """
+    tryread = base.tryreader(f.readinto)
+    buf = bytearray(buffersize)
+    view = memoryview(buf)
+
+
+
 if __name__ == '__main__':
     L = ['hello', b'world', bytearray(b'whatever'), 1, 3.14, ('a', b'b')]
     L.append(L)

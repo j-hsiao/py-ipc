@@ -3,7 +3,7 @@
 import io
 import struct
 
-from . import base
+from . import util
 
 def chunk_iter2(
     f, out, verbose=False,
@@ -15,7 +15,6 @@ def chunk_iter2(
     size: struct.Struct string for parsing the size of a chunk.
     """
     readinto = f.readinto
-    tryread = base.tryreader(f.readinto, verbose)
     s = struct.Struct(size)
     buf = bytearray(max(buffersize, s.size))
     view = memoryview(buf)
@@ -31,7 +30,7 @@ def chunk_iter2(
             target = s.size
         if end < target:
             p = [end]
-            yield from base.readtil(readinto, view, p, target)
+            yield from util.readtil(readinto, view, p, target)
             end = p[0]
         nbytes = s.unpack_from(buf, start)[0]
         start = target
@@ -49,7 +48,7 @@ def chunk_iter2(
             target = nbytes
         if end < target:
             p = [end]
-            yield from base.readtil(readinto, view, p, target)
+            yield from util.readtil(readinto, view, p, target)
             end = p[0]
         out.append(process(view[start:target]))
         if end == target:

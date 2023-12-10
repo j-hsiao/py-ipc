@@ -1,6 +1,7 @@
 """Base classes."""
 from jhsiao.ipc import errnos
 import traceback
+
 class SwapList(object):
     def __init__(self):
         self.l = []
@@ -105,98 +106,3 @@ class Reader(object):
                 return result if result else -1
             else:
                 return None
-
-def tryreader(func, verbose):
-    """Wrap a readinto function with try/except.
-
-    Converts errors to -1.  EAGAIN, EWOULDBLOCK becomes None.
-    EINTR is retried immediately
-    """
-    def tryread(buf):
-        try:
-            return func(buf)
-        except EnvironmentError as e:
-            if e.errno in errnos.WOULDBLOCK:
-                return None
-            elif e.errno == errnos.EINTR:
-                return tryread(buf)
-            else:
-                if verbose:
-                    traceback.print_exc()
-                return -1
-        except Exception:
-            if verbose:
-                traceback.print_exc()
-            return -1
-    return tryread
-
-
-def readtil(readinto, view, pos, target):
-    """Read into view until pos >= target.
-
-    readinto: the readinto function.
-    view: memoryview to read into
-    pos: a list containing int position.  At the end of the iterator,
-        the final position will be stored in pos.
-    target: target position
-    """
-    p = pos[0]
-    while p < target:
-        try:
-            amt = readinto(view[p:])
-        except EnvironmentError as e:
-            if e.errno in errnos.WOULDBLOCK:
-                yield None
-            elif e.errno != errnos.EINTR:
-                raise
-        except Exception:
-            if verbose:
-                traceback.print_exc()
-            yield -1
-            break
-        else:
-            if amt:
-                p += amt
-                yield amt
-            elif amt is None:
-                yield None
-            else:
-                yield -1
-                break
-    pos[0] = p
-
-def readtilsend(readinto):
-    """Read into view until pos >= target.
-
-    readinto: the readinto function.
-    view: memoryview to read into
-    pos: a list containing int position.  At the end of the iterator,
-        the final position will be stored in pos.
-    target: target position
-    """
-    view, pos, target = yield None
-    while 1:
-        while pos < target:
-            try:
-                amt = readinto(view[pos:])
-            except EnvironmentError as e:
-                if e.errno in errnos.WOULDBLOCK:
-                    yield None
-                elif e.errno != errnos.EINTR:
-                    raise
-            except Exception:
-                if verbose:
-                    traceback.print_exc()
-                pos = -1
-                break
-            else:
-                if amt:
-                    pos += amt
-                    yield amt
-                elif amt is None:
-                    yield amt
-                else:
-                    pos = -1
-                    break
-        yield 0
-        view, pos, target = yield pos

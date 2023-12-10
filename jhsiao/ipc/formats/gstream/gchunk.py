@@ -3,7 +3,9 @@ import io
 import struct
 import sys
 
-from . import base
+from jhsiao.ipc import errnos
+
+from . import base, util
 
 
 class GChunkReader(base.Reader):
@@ -67,7 +69,7 @@ def chunk_iter(
     buffersize: size of the buffer.
     size: struct.Struct string for parsing the size of a chunk.
     """
-    tryread = base.tryreader(f.readinto, verbose)
+    tryread = util.tryreader(f.readinto, verbose)
     s = struct.Struct(size)
     buf = bytearray(max(buffersize, s.size))
     view = memoryview(buf)
@@ -76,10 +78,8 @@ def chunk_iter(
     while 1:
         target = start + s.size
         if target > len(buf):
-            cursize = end - start
-            view[:cursize] = view[start:end]
+            buf, view, end = util.resize_or_shift(buf, view, start, end, s.size)
             start = 0
-            end = cursize
             target = s.size
         while end < target:
             amt = tryread(view[end:])
@@ -94,15 +94,8 @@ def chunk_iter(
         start = target
         target = start + nbytes
         if target > len(buf):
-            cursize = end - start
-            if nbytes > len(buf):
-                buf = bytearray(nbytes + s.size)
-                buf[:cursize] = view[start:end]
-                view = memoryview(buf)
-            else:
-                view[:cursize] = view[start:end]
+            buf, view, end = util.resize_or_shift(buf, view, start, end, s.size+nbytes, 1.1)
             start = 0
-            end = cursize
             target = nbytes
         while end < target:
             amt = tryread(view[end:])
@@ -132,7 +125,7 @@ else:
         size: struct.Struct string for parsing the size of a chunk.
         """
         readinto = f.readinto
-        tryread = base.tryreader(f.readinto, verbose)
+        readtil = util.readtil
         s = struct.Struct(size)
         buf = bytearray(max(buffersize, s.size))
         view = memoryview(buf)
@@ -148,7 +141,7 @@ else:
                 target = s.size
             if end < target:
                 p = [end]
-                for _ in base.readtil(readinto, view, p, target):
+                for _ in readtil(readinto, view, p, target):
                     yield _
                 end = p[0]
             nbytes = s.unpack_from(buf, start)[0]
@@ -167,7 +160,7 @@ else:
                 target = nbytes
             if end < target:
                 p = [end]
-                for _ in base.readtil(readinto, view, p, target):
+                for _ in readtil(readinto, view, p, target):
                     yield _
                 end = p[0]
             out.append(process(view[start:target]))
@@ -185,9 +178,8 @@ def chunk_iter3(
     buffersize: size of the buffer.
     size: struct.Struct string for parsing the size of a chunk.
     """
-    readtils = base.readtilsend(f.readinto)
+    readtils = util.readtilsend(f.readinto, verbose)
     next(readtils)
-    tryread = base.tryreader(f.readinto, verbose)
     s = struct.Struct(size)
     buf = bytearray(max(buffersize, s.size))
     view = memoryview(buf)
@@ -196,10 +188,8 @@ def chunk_iter3(
     while 1:
         target = start + s.size
         if target > len(buf):
-            cursize = end - start
-            view[:cursize] = view[start:end]
+            buf, view, end = util.resize_or_shift(buf, view, start, end, s.size, 1)
             start = 0
-            end = cursize
             target = s.size
         if end < target:
             v = readtils.send((view, end, target))
@@ -207,21 +197,12 @@ def chunk_iter3(
                 yield v
                 v = next(readtils)
             end = next(readtils)
-            if end < target:
-                yield -1
         nbytes = s.unpack_from(buf, start)[0]
         start = target
         target = start + nbytes
         if target > len(buf):
-            cursize = end - start
-            if nbytes > len(buf):
-                buf = bytearray(nbytes + s.size)
-                buf[:cursize] = view[start:end]
-                view = memoryview(buf)
-            else:
-                view[:cursize] = view[start:end]
+            buf, view, end = util.resize_or_shift(buf, view, start, end, nbytes+s.size, 1.1)
             start = 0
-            end = cursize
             target = nbytes
         if end < target:
             v = readtils.send((view, end, target))
@@ -229,8 +210,6 @@ def chunk_iter3(
                 yield v
                 v = next(readtils)
             end = next(readtils)
-            if end < target:
-                yield -1
         out.append(process(view[start:target]))
         if end == target:
             start = end = 0

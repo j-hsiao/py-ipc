@@ -175,10 +175,10 @@ while next(it) != -1:
     pass'''
     _run_timings(
         dict(
-            iter1=script1, read=script2,
-            readinto1=script3, iter2=script4,
-            yieldfrom=script5, samesubgen=script6,
-            noreadsubfunc=script7),
+            iterclass=script1, read=script2,
+            readinto1=script3, iter_tryread=script4,
+            yieldfrom=script5, send=script6,
+            fullraw=script7),
         setup, 10, 100)
 
 def test_timegline():
