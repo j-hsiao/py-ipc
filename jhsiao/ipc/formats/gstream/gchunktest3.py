@@ -5,7 +5,7 @@ import struct
 
 from . import util
 
-def chunk_iter2(
+def chunk_iter_yieldfrom(
     f, out, verbose=False,
     buffersize=io.DEFAULT_BUFFER_SIZE, size='<Q',
     process=memoryview.tobytes):

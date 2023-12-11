@@ -43,28 +43,35 @@ def test_gchunk():
 
         del out[:]
         dummy.seek(0)
-        for result in gchunk.chunk_iter(dummy, out, False, buffersize=9):
+        for result in gchunk.chunk_iter_tryread(dummy, out, False, buffersize=9):
             if result is not None and result < 0:
                 break
         assert out == messages
 
         del out[:]
         dummy.seek(0)
-        for result in gchunk.chunk_iter2(dummy, out, False, buffersize=9):
+        for result in gchunk.chunk_iter_yieldfrom(dummy, out, False, buffersize=9):
             if result is not None and result < 0:
                 break
         assert out == messages
 
         del out[:]
         dummy.seek(0)
-        for result in gchunk.chunk_iter3(dummy, out, False, buffersize=9):
+        for result in gchunk.chunk_iter_send(dummy, out, False, buffersize=9):
             if result is not None and result < 0:
                 break
         assert out == messages
 
         del out[:]
         dummy.seek(0)
-        for result in gchunk.chunk_iter4(dummy, out, False, buffersize=9):
+        for result in gchunk.chunk_iter_raw(dummy, out, False, buffersize=9):
+            if result is not None and result < 0:
+                break
+        assert out == messages
+
+        del out[:]
+        dummy.seek(0)
+        for result in gchunk.chunk_iter_cachedot(dummy, out, False, buffersize=9):
             if result is not None and result < 0:
                 break
         assert out == messages
@@ -110,9 +117,10 @@ def test_gline():
         assert out == messages
 
 def _run_timings(tests, setup, repeat, number):
+    fmt = '{{:{}}}'.format(max(map(len, tests))).format
     for name, script in tests.items():
         print(
-            name,
+            fmt(name),
             min(timeit.repeat(script, setup, repeat=repeat, number=number)))
 
 
@@ -155,31 +163,41 @@ while r.readinto1(out) != -1:
 r.detach()'''
     script4 = '''out = []
 dummy.seek(0)
-it = gchunk.chunk_iter(dummy, out, True)
+it = gchunk.chunk_iter_tryread(dummy, out, True)
 while next(it) != -1:
     pass'''
     script5 = '''out = []
 dummy.seek(0)
-it = gchunk.chunk_iter2(dummy, out, True)
+it = gchunk.chunk_iter_yieldfrom(dummy, out, True)
 while next(it) != -1:
     pass'''
     script6 = '''out = []
 dummy.seek(0)
-it = gchunk.chunk_iter3(dummy, out, True)
+it = gchunk.chunk_iter_send(dummy, out, True)
 while next(it) != -1:
     pass'''
     script7 = '''out = []
 dummy.seek(0)
-it = gchunk.chunk_iter3(dummy, out, True)
+it = gchunk.chunk_iter_raw(dummy, out, True)
+while next(it) != -1:
+    pass'''
+    script8 = '''out = []
+dummy.seek(0)
+it = gchunk.chunk_iter_cachedot(dummy, out, True)
 while next(it) != -1:
     pass'''
     _run_timings(
         dict(
-            iterclass=script1, read=script2,
-            readinto1=script3, iter_tryread=script4,
-            yieldfrom=script5, send=script6,
-            fullraw=script7),
-        setup, 10, 100)
+            clsread=script1,
+            readit=script2,
+            readinto1=script3,
+            tryread=script4,
+            yieldfrom=script5,
+            send=script6,
+            raw=script7,
+            cachedot=script8,
+            ),
+        setup, 10, 500)
 
 def test_timegline():
     setup = r'''import io

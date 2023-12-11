@@ -60,7 +60,7 @@ class GChunkReader(base.Reader):
             else:
                 start = target
 
-def chunk_iter(
+def chunk_iter_tryread(
     f, out, verbose=False,
     buffersize=io.DEFAULT_BUFFER_SIZE, size='<Q',
     process=memoryview.tobytes):
@@ -113,9 +113,9 @@ def chunk_iter(
             start = target
 
 if sys.version_info >= (3,3):
-    from .gchunktest3 import chunk_iter2
+    from .gchunktest3 import chunk_iter_yieldfrom
 else:
-    def chunk_iter2(
+    def chunk_iter_yieldfrom(
         f, out, verbose=False,
         buffersize=io.DEFAULT_BUFFER_SIZE, size='<Q',
         process=memoryview.tobytes):
@@ -169,7 +169,7 @@ else:
             else:
                 start = target
 
-def chunk_iter3(
+def chunk_iter_send(
     f, out, verbose=False,
     buffersize=io.DEFAULT_BUFFER_SIZE, size='<Q',
     process=memoryview.tobytes):
@@ -216,7 +216,7 @@ def chunk_iter3(
         else:
             start = target
 
-def chunk_iter4(
+def chunk_iter_raw(
     f, out, verbose=False,
     buffersize=io.DEFAULT_BUFFER_SIZE, size='<Q',
     process=memoryview.tobytes):
@@ -298,6 +298,56 @@ def chunk_iter4(
                 else:
                     yield -1
         out.append(process(view[start:target]))
+        if end == target:
+            start = end = 0
+        else:
+            start = target
+
+def chunk_iter_cachedot(
+    f, out, verbose=False,
+    buffersize=io.DEFAULT_BUFFER_SIZE, size='<Q',
+    process=memoryview.tobytes):
+    """Iterator for parsing chunks of data.
+
+    buffersize: size of the buffer.
+    size: struct.Struct string for parsing the size of a chunk.
+    """
+    readtils = util.readtilsend(f.readinto, verbose)
+    next(readtils)
+    send = readtils.send
+    s = struct.Struct(size)
+    size, unpack_from = s.size, s.unpack_from
+    buf = bytearray(max(buffersize, size))
+    view = memoryview(buf)
+    start = end = 0
+    append = out.append
+    resize_or_shift = util.resize_or_shift
+    while 1:
+        target = start + size
+        if target > len(buf):
+            buf, view, end = resize_or_shift(buf, view, start, end, size, 1)
+            start = 0
+            target = size
+        if end < target:
+            v = send((view, end, target))
+            while v or v is None:
+                yield v
+                v = next(readtils)
+            end = next(readtils)
+        nbytes = unpack_from(buf, start)[0]
+        start = target
+        target = start + nbytes
+        if target > len(buf):
+            buf, view, end = resize_or_shift(buf, view, start, end, nbytes+size, 1.1)
+            start = 0
+            target = nbytes
+        if end < target:
+            v = send((view, end, target))
+            while v or v is None:
+                yield v
+                v = next(readtils)
+            end = next(readtils)
+        append(process(view[start:target]))
         if end == target:
             start = end = 0
         else:
