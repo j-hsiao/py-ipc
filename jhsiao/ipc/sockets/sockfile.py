@@ -23,6 +23,10 @@ class Sockfile(io.RawIOBase):
 
     Class methods should work, but may be overwritten for each instance
     for slightly better performance.
+
+    Also note, that as with most file-like RawIOBase type file-like
+    objects, instead of returning None when non-blocking and no data
+    may be read/written, an exception might be raised.
     """
     SHUT_RD = socket.SHUT_RD
     SHUT_WR = socket.SHUT_WR
