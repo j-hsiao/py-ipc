@@ -5,7 +5,8 @@ In general, when polling, the fewer results, the better for performance.
 This is regardless of what polling mechanism is used. (poll, epoll,
 select, others not yet tested.) As a result, adopt epoll one-shot like
 behavior.  Objects for reading are assumed to be readable until
-EWOULDBLOCK or EAGAIN or any other equivalent result.
+EWOULDBLOCK or EAGAIN or any other equivalent result.  Likewise, objects
+are assumed to be writeable until EWOULDBLOCK or EAGAIN, etc.
 """
 import io
 
@@ -82,17 +83,6 @@ class SelfFile(io.RawIOBase):
         self.w.close()
         self.r.close()
 
-# TODO:
-# change linked list to dict may traverse multiple times
-# so insert/deletion times are probably less significant...
-# plus, dict interface is easier to handle
-ITEM = 0
-RPRE = 1
-RPST = 2
-WPRE = 3
-WPST = 4
-RGEN = 5
-WGEN = 6
 class Poller(object):
     """Poll resources and handle io.
 
@@ -100,26 +90,50 @@ class Poller(object):
     otherwise.  Writers are assumed to be writable until polled
     otherwise.
     """
-    def __init__(self):
-        """Initialize a poller."""
+    def __init__(self, rgen, wgen):
+        """Initialize a poller.
+
+        rgen, wgen: func(poller, resource).
+            These should return generators that can be stepped through
+            with next().
+        """
+        self.control = SelfFile()
         self.running = False
         self.resources = {}
-        self.writers = None
-        self.readers = None
+        self.rpending = {}
+        self.wpending = {}
+        self.rgen = rgen
+        self.wgen = wgen
+        self.statechanged = []
 
-    def wrap(self, resource):
+    def wrap(self, fd, resource):
         """Wrap a resource.
 
-        For constant time addition/removal from list of readers/writers
-        to handle, objects are stored as doubly linked list.
-        [object, rpre, rpost, wpre, wpost, ...] where ... is determined
-        by subclasses.
+        Return [
+            fileno: int, the file number.
+            resource: the object.
+            rgenerator: generator, next() should read and process a bit.
+            wgenerator: generator, next() should write a bit.
+            rpolling: bool, whether object should be read polled.
+            wpolling: bool, whether object should be write polled.
+        ]
         """
-        return [resource, None, None, None, None]
+        return [
+            fd, resource,
+            self.rgen(self, resource), self.wgen(self, resource),
+            True, False]
+
+    def register(self, resource):
+        """Add an item to poller threadsafe."""
+        raise NotImplementedError
+    def unregister(self, resource):
+        """Remove an item from poller threadsafe."""
+        raise NotImplementedError
 
     def add(self, resource):
         """Add a resource for handling.
 
+        This should be called from same thread as the polling thread.
         resource: file-like object, the resource to add, should be
                   non-blocking.
 
@@ -128,64 +142,46 @@ class Poller(object):
         and polled as necessary.
         """
         fd = resource.fileno()
-        orig = self.resources.pop(resource.fileno(), None)
+        orig = self.resources.pop(fd, None)
         if orig is not None:
-            self.rremove(orig)
-            self.wremove(orig)
-        self.resources[fd] = self.wrap(resource)
+            self.remove(fd)
+        wrapped = self.resources[fd] = self.wrap(fd, resource)
 
-    def radd(self, item):
-        """Add an item to read handling, assume not already added."""
-        item[RPST] = self.readers
-        item[RPRE] = None
-        if self.readers is not None:
-            self.readers[RPRE] = item
-        self.readers = item
-    def wadd(self, item):
-        """Add an item to write handling, assume not already added."""
-        item[WPST] = self.writers
-        item[WPRE] = None
-        if self.writers is not None:
-            self.writers[WPRE] = item
-        self.writers = item
+    def remove(self, fd):
+        """Unregister from poller.
 
-    def rrem(self, item):
-        """Remove an item from read handling."""
-        if item[RPRE] is None:
-            self.readers = item[RPST]
-        else:
-            item[RPRE][RPST] = item[RPST]
-            item[RPST][RPRE] = item[RPRE]
-    def wrem(self, item):
-        """Remove an item from write handling."""
-        if item[WPRE] is None:
-            self.writers = item[WPST]
-        else:
-            item[WPRE][WPST] = item[WPST]
-            item[WPST][WPRE] = item[WPRE]
+        This should be called from same thread as the polling thread.
+        """
+        self.rpending.pop(fd, None)
+        self.wpending.pop(fd, None)
+        self.resources.pop(fd, None)
 
     def step(self):
         """Poll registered resources and handle a little bit."""
+        # result = self.poll()
+        # for item in self.rpending.values():
+        #     next(item)
+        # for item in self.wpending.values():
+        #     next(item)
+        # for result in pollresult:
+        #     if readable:
+        #         readabit
+        #         if successful:
+        #             self.rpending[fd] = rgen
+        #     if writable:
+        #         writabit
+        #         if successful:
+        #             self.wpending[fd] = wgen
+        # remove from any lists or whatever...
+        # since cannot change dicts while iterating over them
+        # for item in self.statechanged:
+        #     next(item)
         raise NotImplementedError
-
-        ritem = self.readers
-        witem = self.writers
-        # do polling
-        # do a step and if more, add to readers/writers
-        # ritem/witem keep ref to start of original readers/writers
-        # so fair handling.
-        while ritem is not None:
-            nitem = ritem[RPST]
-            next(ritem[RGEN])
-            ritem = nitem
-        while witem is not None:
-            nitem = witem[WPST]
-            next(witem[WGEN])
-            witem = nitem
-
-
 
     def run(self):
         self.running = True
         while self.running:
             self.step()
+
+    def stop(self):
+        raise NotImplementedError

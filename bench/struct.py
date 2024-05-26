@@ -45,6 +45,8 @@ class tst(object):
         self.l = None
 t = tst()
 
+data = [dict(), None]
+
 def add_dict():
     thing = next(dgen)
     t.d[thing[0]] = thing
@@ -56,6 +58,18 @@ def add_llst():
     if first is not None:
         first[1] = thing
     t.l = thing
+
+def add_dictl():
+    thing = next(dgen)
+    data[0][thing[0]] = thing
+
+def add_llstl():
+    thing = next(lgen)
+    first = thing[2] = data[1]
+    thing[1] = None
+    if first is not None:
+        first[1] = thing
+    data[1] = thing
 '''
 
 
@@ -65,6 +79,8 @@ bench.run(
     title='add',
     dict='add_dict()',
     llst='add_llst()',
+    dictl='add_dictl()',
+    llstl='add_llstl()',
     setup=setup.format(args.number),
     args=args
 )
