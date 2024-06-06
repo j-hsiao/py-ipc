@@ -18,8 +18,9 @@ impls:
 
 
 """
-import traceback
+import io
 import threading
+import traceback
 try:
     import errno
 except ImportError:
@@ -35,7 +36,7 @@ FD = 0
 OBJ = 1
 RGEN = 2
 WGEN = 3
-WRITER = 4
+WRAPPED = 4
 RPOLL = 5
 WPOLL = 6
 
@@ -46,177 +47,176 @@ class Poller(object):
     otherwise.  Writers are assumed to be writable until polled
     otherwise.
     """
-    def __init__(self, rgen, wgen):
+    def __init__(self, wrap):
         """Initialize a poller.
 
-        rgen, wgen: func(poller, resource).
-            These should return generators that can be stepped through
-            with next().
+        wrap: func(poller, resource).
+            Wrapper function to wrap resources.
+            Result should have these methods:
+                readloop(): generator, each step reads some data
+                writeloop(): generator, each step writes some data
+                write(data): Queue data to write.
         """
-        self.control = rwpair.RWPair()
+        # Regarding control, polling is generally a blocking operation.
+        # Adding a separate pollable object allows unblocking polling
+        # to perform some action like adding/removing polled resources.
+        # if there are a large number of tasks, it might block.
+        # as a result, writing should be done without lock.
         self.running = False
         self.resources = {}
         self.rpending = {}
         self.wpending = {}
         self.statechanged = set()
         self.out = []
-        self.rgen = rgen
-        self.wgen = wgen
-        self._tasks = []
+        self._wrap = wrap
+        self.tasks = []
         self.lock = threading.Lock()
 
-    def __iter__(self):
-        """Handle tasks."""
-        lck = self.lock
-        while 1:
-            with lck:
-                self.control.read(len(self._tasks))
-                tasks = self._tasks
-                self._tasks = []
-            for task in self._tasks:
-                try:
-                    task[0](*task[1:])
-                except Exception:
-                    if task is None:
-                        self.running = False
-                        break
-                    else:
-                        traceback.print_exc()
-            yield
+        self.control = rwpair.RWPair()
+        fd = self.control.fileno()
+        self.resources[fd] = [
+            fd, self.control,
+            self.readloop(), None,
+            self, True, None]
+        self.rpoll(fd)
 
-    def rpoll(self, fd):
-        """(re)Register for read-only polling."""
-        raise NotImplementedError
-    def wpoll(self, fd):
-        """(re)Register for write-only polling."""
-        raise NotImplementedError
-    def rwpoll(self, fd):
-        """(re)Register for read and write polling."""
-        raise NotImplementedError
-    def nopoll(self, fd):
-        """(re)Register for no polling."""
-        raise NotImplementedError
-
-    def wrap(self, fd, resource):
-        """Wrap a resource.
-
-        Return [
-            0: fileno: int, the file number.
-            1: resource: the object.
-            2: rgenerator: generator, next() should read and process a bit.
-            3: wgenerator: generator, next() should write a bit.
-            4: writer wrapper
-            5: rpolling: bool, whether object should be read polled.
-            6: wpolling: bool, whether object should be write polled.
-        ]
-        """
-        wgen = self.wgen(self, resource)
-        return [
-            fd, resource,
-            iter(self.rgen(self, resource)),
-            iter(wgen), wgen,
-            True, False]
-
+    # ------------------------------
+    # public interface
+    # ------------------------------
     def register(self, resource, read=True):
         """Add an item to poller threadsafe.
 
         resource: should have fileno(), readinto(), and write() methods.
-        read: bool, begin read-polling.
+        read: bool, begin read-polling.  Otherwise, register for only
+            writing.
         Return a wrapped object.  Writing should use that object.
         """
-        fd = resource.fileno()
+        wrapped = self.wrap(resource)
+        if read:
+            wrapped[RPOLL] = True
+        else:
+            wrapped[RPOLL] = None
         with self.lock:
-            self.control.write(b' ')
-            self._tasks.append((self.add, resource, read))
+            self.tasks.append((self.add, wrapped))
+        self.control.write(b' ')
+        return wrapped[WRAPPED]
 
     def unregister(self, resource):
         """Remove an item from poller threadsafe."""
         if not isinstance(resource, int):
             resource = resource.fileno()
         with self.lock:
-            self.control.write(b' ')
-            self._tasks.append((self.remove, resource))
+            self.tasks.append((self.remove, resource))
+        self.control.write(b' ')
 
-    def add(self, resource, read=True):
-        """Add a resource for handling.
+    def __del__(self):
+        self.close()
 
-        This should be called from same thread as the polling thread.
-        resource: file-like object, the resource to add, should be
-                  non-blocking.
-
-        Added resources will be added to read polling only.
-        When writing is required, then it will be added to self.writers
-        and polled as necessary.
-        """
-        fd = resource.fileno()
-        orig = self.resources.pop(fd, None)
-        if orig is not None:
-            self.remove(fd)
-        wrapped = self.resources[fd] = self.wrap(fd, resource)
-
-    def remove(self, fd):
-        """Unregister from poller.
-
-        This should be called from same thread as the polling thread.
-        """
-        self.rpending.pop(fd, None)
-        self.wpending.pop(fd, None)
-        self.resources.pop(fd, None)
+    def close(self):
+        self.stop()
+        for item in list(self.resources):
+            self.remove(item)
+        self.statechanged.clear()
+        self.control.close()
 
     def step(self):
-        """Poll registered resources and handle a little bit."""
+        """Poll registered resources and handle a little bit.
+
+        Use this for custom polling loop.
+        """
         for item in self.rpending.values():
             next(item)
         for item in self.wpending.values():
             next(item)
-        for fd in self.statechanged:
-            info = self.resources[fd]
-            if info[RPOLL]:
-                if info[WPOLL]:
-                    self.rpending.pop(fd, None)
+        if self.statechanged:
+            for fd in self.statechanged:
+                info = self.resources[fd]
+                if info[RPOLL]:
+                    if info[WPOLL]:
+                        self.rpending.pop(fd, None)
+                        self.wpending.pop(fd, None)
+                        self.rwpoll(fd)
+                    else:
+                        self.rpending.pop(fd, None)
+                        self.rpoll(fd)
+                elif info[WPOLL]:
                     self.wpending.pop(fd, None)
-                    self.rwpoll(fd)
+                    self.wpoll(fd)
                 else:
-                    self.rpending.pop(fd, None)
-                    self.rpoll(fd)
-            elif info[WPOLL]:
-                self.wpending.pop(fd, None)
-                self.wpoll(fd)
-            else:
-                if info[RPOLL] is None and info[WPOLL] is None:
-                    self.remove(fd)
-        self.statechanged.clear()
+                    self.nopoll(fd)
+                    if info[RPOLL] is None and info[WPOLL] is None:
+                        self.remove(fd)
+            self.statechanged.clear()
 
     def run(self):
-        """Run polling loop."""
+        """Run polling loop in current thread."""
         self.running = True
         while self.running:
             self.step()
 
     def start(self):
         """Start polling loop in a separate thread."""
-        self.thread = threading.Thread(target=self.run)
-        self.thread.start()
+        if getattr(self, 'thread', None) is None:
+            self.thread = threading.Thread(target=self.run)
+            self.thread.start()
 
     def stop(self):
         """Stop polling thread."""
         with self.lock:
-            self.control.write(b'0')
-            self._tasks.append(None)
+            self.tasks.append(None)
+        self.control.write(b'0')
         self.thread.join()
 
-    def __del__(self):
-        self.close()
+    def write_items(self, fd, dataq, write):
+        """Generator to write items in dataq.
 
-    def close(self):
-        self.resources.clear()
-        self.rpending.clear()
-        self.wpending.clear()
-        self.stop()
-        self.control.close()
+        When dataq is empty, then stop processing and wait until next()
+        call.  Start polling if would block.
+        """
+        while 1:
+            if dataq:
+                item = dataq.popleft()
+                target = len(item)
+                written = 0
+                while 1:
+                    try:
+                        amt = write(target)
+                    except OSError as e:
+                        if e.errno in (EWOULDBLOCK, EAGAIN):
+                            poller.statechanged.add(fd)
+                            poller.resources[fd][WPOLL] = True
+                            yield
+                        elif e.errno == EINTR:
+                            continue
+                        else:
+                            self.statechanged.add(fd)
+                            poller.resources[fd][WPOLL] = None
+                            yield -1
+                            return
+                    except Exception:
+                        traceback.print_exc()
+                        self.statechanged.add(fd)
+                        poller.resources[fd][WPOLL] = None
+                        yield -1
+                        return
+                    else:
+                        yield
+                        written += amt
+                        if written < target:
+                            item = item[amt:]
+                        else:
+                            break
+            else:
+                self.statechanged.add(fd)
+                yield
 
-    def readinto(self, fd, readinto, buf):
+    def fill_buf(self, fd, readinto, buf, target):
         """A generator to read until buf is full.
+
+        fd: the fd of the resource.
+        readinto: readinto function
+        buf: a memoryview of buffer to fill
+        target: target bytes to read, should be <= len(buf)
 
         Handle the appropriate resource manipulations.
         1. If EOF is encountered, remove from rpending.
@@ -225,12 +225,10 @@ class Poller(object):
         3. Otherwise, no state change, last yield is the total number
            of bytes read.
         """
-        target = len(buf)
         total = 0
-        v = memoryview(buf)
         while 1:
             try:
-                amt = readinto(v)
+                amt = readinto(buf)
             except OSError as e:
                 if e.errno in (EWOULDBLOCK, EAGAIN):
                     self.statechanged.add(fd)
@@ -239,92 +237,63 @@ class Poller(object):
                 elif e.errno == EINTR:
                     continue
                 else:
+                    traceback.print_exc()
                     self.statechanged.add(fd)
                     self.resources[fd][RPOLL] = None
                     yield -1
                     return
+            except Exception:
+                traceback.print_exc()
+                self.statechanged.add(fd)
+                self.resources[fd][RPOLL] = None
+                yield -1
+                return
             else:
                 if amt:
                     total += amt
-                    if total == target:
+                    if total >= target:
                         yield total
                         return
                     v = v[amt:]
                     yield 0
                 else:
                     self.statechanged.add(fd)
-                    self.resources[fd][RPOLL] = None
-                    yield -1
-                    return
+                    if amt is None:
+                        self.resources[fd][RPOLL] = True
+                        yield
+                    else:
+                        self.resources[fd][RPOLL] = None
+                        yield -1
+                        return
 
+    def enqueue_write(self, fd, data):
+        info = self.resources[fd]
+        info[WRITER].dataq.append(data)
+        state = info[WPOLL]
+        if not state and state is not None:
+            self.wpending[fd] = info[WGEN]
 
-
-
-class Poller2(object):
-    """Poll resources and handle io.
-
-    Readers are assumed to have no data available until polled
-    otherwise.  Writers are assumed to be writable until polled
-    otherwise.
-    """
-
-    def __init__(self, rgen, wgen):
-        """Initialize.
-
-        rgen: generator for reading.  Yield buffers for the poller to
-              read data into.
-        wgen: generator for writing. Yield data to write.
-        """
-        self.control = rwpair.RWPair()
-        self.running = False
-        self.resources = {}
-        self.rpending = {}
-        self.wpending = {}
-        self.statechanged = set()
-        self.out = []
-        self.rgen = rgen
-        self.wgen = wgen
-        self._tasks = []
-        self.lock = threading.Lock()
-
-    def register(self, resource, read=True):
-        """Add an item to poller threadsafe.
-
-        resource: should have fileno(), readinto(), and write() methods.
-        read: bool, begin read-polling.
-        Return a wrapped object.  Writing should use that object.
-        """
-        fd = resource.fileno()
-        with self.lock:
-            self.control.write(b' ')
-            self._tasks.append((self.add, resource, read))
-
-    def unregister(self, resource):
-        """Remove an item from poller threadsafe."""
-        if not isinstance(resource, int):
-            resource = resource.fileno()
-        with self.lock:
-            self.control.write(b' ')
-            self._tasks.append((self.remove, resource))
-
-
-    def __iter__(self):
+    # ------------------------------
+    # internal interface
+    # ------------------------------
+    def readloop(self):
         """Handle tasks."""
         lck = self.lock
         while 1:
             with lck:
-                self.control.read(len(self._tasks))
-                tasks = self._tasks
-                self._tasks = []
-            for task in self._tasks:
+                tasks = self.tasks
+                self.control.read(len(tasks))
+                self.tasks = []
+            for task in self.tasks:
                 try:
                     task[0](*task[1:])
-                except Exception:
+                except TypeError:
                     if task is None:
                         self.running = False
                         break
-                    else:
-                        traceback.print_exc()
+                    traceback.print_exc()
+                except Exception:
+                    traceback.print_exc()
             yield
 
     def rpoll(self, fd):
@@ -349,69 +318,60 @@ class Poller2(object):
             2: rgenerator: generator, next() should read and process a bit.
             3: wgenerator: generator, next() should write a bit.
             4: writer wrapper
-            5: rpolling: bool, whether object should be read polled.
-            6: wpolling: bool, whether object should be write polled.
+            5: rpolling: bool|None,
+                True: should be polled.
+                False: not polled (being handled)
+                None: read error, not handled or polled
+            6: wpolling: bool|None, whether object should be write polled.
+                True: should be polled.
+                False: not polled (being handled or no data to handle)
+                None: read error, not handled or polled
         ]
         """
-        wgen = self.wgen(self, resource)
+        wrapped = self._wrap(self, resource)
+        wgen = gettattr(wrapped, 'writeloop', None)
+        if wgen is not None:
+            wgen = wgen()
         return [
             fd, resource,
-            iter(self.rgen(self, resource)),
-            iter(wgen), wgen,
-            True, False]
+            wrapped.readloop(), wgen,
+            wrapped, True, False]
 
-    def add(self, resource, read=True):
-        """Add a resource for handling.
+    def add(self, wrapped):
+        """Add a wrapped resource in polling thread.
 
-        This should be called from same thread as the polling thread.
-        resource: file-like object, the resource to add, should be
-                  non-blocking.
-
-        Added resources will be added to read polling only.
-        When writing is required, then it will be added to self.writers
-        and polled as necessary.
+        wrapped: wrapped non-blocking file-like object.
         """
-        fd = resource.fileno()
+        fd = wrapped[FD]
         orig = self.resources.pop(fd, None)
         if orig is not None:
             self.remove(fd)
-        wrapped = self.resources[fd] = self.wrap(fd, resource)
+        if wrapped[RPOLL]:
+            self.rpoll(fd)
 
     def remove(self, fd):
-        """Unregister from poller.
+        """Unregister from poller in polling thread.
 
         This should be called from same thread as the polling thread.
         """
+        self.nopoll(fd)
         self.rpending.pop(fd, None)
         self.wpending.pop(fd, None)
         self.resources.pop(fd, None)
 
-    def step(self):
-        """Poll registered resources and handle a little bit."""
-        changed = set()
-        for item in self.rpending.values():
-            fd, gen, readinto, buf, target = item
-            try:
-                amt = readinto(buf)
-            except OSError as e:
-                if e.errno in (EWOULDBLOCK, EAGAIN):
-                    #TODO poll
-                    pass
-                elif e.errno in EINTR:
-                    pass
-                else:
-                    #TODO no poll remove from read
-                    pass
-            else:
-                if amt:
-                    if target <= amt:
-                        pass
-                    else:
-                        target -= amt
-                else:
-                    if amt is None:
-                        #TODO back to poll
-                        pass
-                    else:
-                        #TODO no poll remove from read
-                        pass
+
+class Poller2(Poller):
+    """Poll resources and handle io.
+
+    readloop should yield (view, target size) tuple.
+    each poll step will read a little and .send() the net size
+    This alternative implementation has fewer generators so maybe
+    perform better? but have to save state, so maybe not? just
+    testing alternative implementation
+
+    """
+    def __iter__(self):
+        lck = self.lock
+        buf = memoryview(bytearray(io.DEFAULT_BUFFER_SIZE))
+        while 1:
+            size = yield buf, 1

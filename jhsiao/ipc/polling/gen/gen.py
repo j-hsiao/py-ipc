@@ -1,4 +1,6 @@
 """Generator interfaces."""
+import collections
+
 try:
     import errno
 except ImportError:
@@ -7,53 +9,6 @@ except ImportError:
 EAGAIN = getattr(errno, 'EAGAIN', 11)
 EWOULDBLOCK = getattr(errno, 'EWOULDBLOCK', 10035)
 EINTR = getattr(errno, 'EINTR', 4)
-
-def readall(readinto, buf):
-    """Generator to until a buffer is full.
-
-    readinto: function to read data into buf.
-    buf: buffer to read into.
-
-    Yield the size of each sequential read/write until
-
-    Return the number of bytes read.
-    Assuming read polling:
-        < len(buf): EOF OR no data available (retry later)
-        -1: error
-
-
-    choice1:
-        -1: EOF or error, stop reading, no more polling.
-        0: not finished, keep reading
-        X: number of bytes read.
-           If < len(buf), Stop reading, go back to polling
-    """
-    target = len(buf)
-    total = 0
-    v = memoryview(buf)
-    while 1:
-        try:
-            amt = readinto(v)
-        except OSError as e:
-            if e.errno in (EAGAIN, EWOULDBLOCK):
-                yield total
-                return
-            elif e.errno == EINTR:
-                continue
-            else:
-                yield -1
-                return
-        else:
-            if amt:
-                total += amt
-                if total == target:
-                    yield total
-                    return
-                v = v[amt:]
-                yield 0
-            else:
-                yield -1
-                return
 
 def writeall(write, data):
     """Generator to Write all bytes in data.
@@ -91,19 +46,21 @@ def writeall(write, data):
     yield total
 
 
-
-
-
-
-class WGen(object):
+class Gen(object):
     def __init__(self, poller, f):
         self.poller = poller
         self.f = f
+        self.dataq = collections.deque()
 
     def write(self, data):
-        """Prepare data to be written in the generator."""
+        with self.poller.lock:
+            self.poller.tasks.append(
+                (self.poller.enqueue_write, self.f.fileno(), data))
+        self.poller.control.write(b' ')
+
+    def readloop(self):
         raise NotImplementedError
 
-    def __iter__(self):
-        """Write data chunk by chunk."""
-        raise NotImplementedError
+    def writeloop(self):
+        return self.poller.write_items(
+            self.f.fileno(), self.dataq, self.f.write)
