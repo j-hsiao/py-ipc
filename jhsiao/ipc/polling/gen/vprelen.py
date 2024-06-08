@@ -19,35 +19,35 @@ SINGLE = 0x3f
 BYTE = struct.Struct('B')
 RHEAD = [
     None,
-    struct.Struct('H'),
-    struct.Struct('L'),
-    struct.Struct('Q')
+    struct.Struct('>H'),
+    struct.Struct('>L'),
+    struct.Struct('>Q')
 ]
 WHEAD = [
-    [struct.Struct('H'), 0xFFFF, 0x40],
-    [struct.Struct('L'), 0xFFFFFFFF, 0x80],
-    [struct.Struct('Q'), 0xFFFFFFFFFFFFFFFF, 0xC0],
+    [struct.Struct('>H'), 0xFFFF, 0x40],
+    [struct.Struct('>L'), 0xFFFFFFFF, 0x80],
+    [struct.Struct('>Q'), 0xFFFFFFFFFFFFFFFF, 0xC0],
 ]
 
-def rprelen(poller, f):
-    readall = gen.readall
+class VPreLen(gen.Gen):
+    """Read and write data with variable data length prefix.
 
-    out = poller.out
-    readinto = f.readinto
+    1 byte:
+        0-63: following data is 0-63 bytes
+        64 : next 2 bytes is length of data
+        128: next 4 bytes is length of data
+        192: next 8 bytes is length of data
+    """
+    def readloop(self):
+        readall = gen.readall
 
-    MAX_HEAD = WHEAD[-1][0].size+1
-    header = bytearray(MAX_HEAD)
-    while 1:
-        pass
+        out = poller.out
+        readinto = f.readinto
 
-
-
-
-
-class WPreLen(gen.WGen):
-    def __init__(self, *args):
-        super(WGen, self).__init__(*args)
-        self.data = collections.deque()
+        MAX_HEAD = WHEAD[-1][0].size+1
+        header = bytearray(MAX_HEAD)
+        while 1:
+            pass
 
     def write(self, data):
         length = len(data)
@@ -66,19 +66,26 @@ class WPreLen(gen.WGen):
                     self.data.append(buf)
                     self.data.append(data)
                     return length
-            raise ValueError('Data length too large ({})'.format(length)
+            raise ValueError('Data length too large ({})'.format(length))
 
-    def __iter__(self):
-        fwrite = self.f.write
-        d = self.deque
-        headbuf = bytearray(0x40)
+QFMT = struct.Struct('>Q')
+class FPreLen(gen.Gen):
+    """Read and write data with 8 bytes of length."""
+    def readloop(self):
+        readall = gen.readall
+
+        out = poller.out
+        readinto = f.readinto
+
+        MAX_HEAD = WHEAD[-1][0].size+1
+        header = bytearray(MAX_HEAD)
         while 1:
-            try:
-                data = self.deque.popleft()
-            except IndexError:
-                yield None
-                # TODO: remove from writeables, no polling
-            else:
-                for item in gen.writeall(fwrite, data):
-                    pass
+            pass
 
+    def write(self, data):
+        with self.poller.lock:
+            self.poller.tasks.append(
+                (self.poller.enqueue_write, self.f.fileno(), data))
+        self.poller.control.write(b' ')
+        QFMT.pack(len(data))
+        data

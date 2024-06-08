@@ -268,10 +268,10 @@ class Poller(object):
 
     def enqueue_write(self, fd, data):
         info = self.resources[fd]
-        info[WRITER].dataq.append(data)
-        state = info[WPOLL]
-        if not state and state is not None:
+        dataq = info[WRAPPED].dataq
+        if not dataq and info[WPOLL] is False:
             self.wpending[fd] = info[WGEN]
+        dataq.append(data)
 
     # ------------------------------
     # internal interface
