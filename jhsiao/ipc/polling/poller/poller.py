@@ -26,9 +26,43 @@ try:
 except ImportError:
     errno = None
 
+
+
+
 EAGAIN = getattr(errno, 'EAGAIN', 11)
 EWOULDBLOCK = getattr(errno, 'EWOULDBLOCK', 10035)
 EINTR = getattr(errno, 'EINTR', 4)
+
+try:
+    wait_for = threading.Condition.wait_for
+except AttributeError:
+    def wait_for(cond, pred, timeout=None):
+        result = pred()
+        if result or timeout == 0:
+            return result
+        elif timeout is None:
+            while 1:
+                try:
+                    cond.wait()
+                except EnvironmentError as e:
+                    if e.errno != EINTR:
+                        raise
+                if pred():
+                    return True
+        else:
+            end = time.time() + timeout
+            while 1:
+                try:
+                    cond.wait(timeout)
+                except EnvironmentError as e:
+                    if e.errno != EINTR:
+                        raise
+                if pred():
+                    return True
+                now = time.time()
+                if end <= now:
+                    return False
+                timeout = end - now
 
 from . import rwpair
 
@@ -40,6 +74,18 @@ WRAPPED = 4
 RPOLL = 5
 WPOLL = 6
 
+def default_handler(poller, info):
+    """Handle error on info.
+
+    This is called after info read and write both error out and the
+    object is removed from polling.
+    """
+    print('fd', info[FD] 'disconnected.')
+    if info[WRAPPED].dataq:
+        print('Outstanding writes:', sum(map(len, info[WRAPPED].dataq)))
+    info[OBJ].close()
+
+
 class Poller(object):
     """Poll resources and handle io.
 
@@ -47,7 +93,7 @@ class Poller(object):
     otherwise.  Writers are assumed to be writable until polled
     otherwise.
     """
-    def __init__(self, wrap):
+    def __init__(self, wrap, handle_error=default_handler):
         """Initialize a poller.
 
         wrap: func(poller, resource).
@@ -56,6 +102,9 @@ class Poller(object):
                 readloop(): generator, each step reads some data
                 writeloop(): generator, each step writes some data
                 write(data): Queue data to write.
+        handle_error: callable
+            If None, do nothing.
+            Otherwise call handle_error(poller, wrapped)
         """
         # Regarding control, polling is generally a blocking operation.
         # Adding a separate pollable object allows unblocking polling
@@ -71,6 +120,8 @@ class Poller(object):
         self._wrap = wrap
         self.tasks = []
         self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+        self.handle_error = handle_error
 
         self.control = rwpair.RWPair()
         fd = self.control.fileno()
@@ -83,12 +134,29 @@ class Poller(object):
     # ------------------------------
     # public interface
     # ------------------------------
-    def register(self, resource, read=True):
+    def get(self, timeout=None):
+        with self.cond:
+            ret = self.out
+            if ret:
+                self.out = []
+                return ret
+            elif wait_for(self.cond, self.ready, timeout):
+                # other thread may have swapped out self.out so
+                # get attr again.
+                ret = self.out
+                self.out = []
+                return ret
+
+    def register(self, resource, read=True, write=True):
         """Add an item to poller threadsafe.
 
         resource: should have fileno(), readinto(), and write() methods.
-        read: bool, begin read-polling.  Otherwise, register for only
-            writing.
+        read: bool, mark for read polling.
+        write: bool, mark for write polling.
+
+        If there is an error in reading/writing for all marked functionalities,
+        the resource will be removed and the handler will be called.
+
         Return a wrapped object.  Writing should use that object.
         """
         wrapped = self.wrap(resource)
@@ -96,6 +164,10 @@ class Poller(object):
             wrapped[RPOLL] = True
         else:
             wrapped[RPOLL] = None
+        if write:
+            wrapped[WPOLL] = True
+        else:
+            wrapped[WPOLL] = None
         with self.lock:
             self.tasks.append((self.add, wrapped))
         self.control.write(b' ')
@@ -146,6 +218,10 @@ class Poller(object):
                     self.nopoll(fd)
                     if info[RPOLL] is None and info[WPOLL] is None:
                         self.remove(fd)
+                        try:
+                            self.handle_error(self, info)
+                        except Exception:
+                            traceback.print_exc()
             self.statechanged.clear()
 
     def run(self):
@@ -213,6 +289,8 @@ class Poller(object):
     def fill_buf(self, fd, readinto, buf, target):
         """A generator to read until buf is full.
 
+        The last yield is the total size read.
+
         fd: the fd of the resource.
         readinto: readinto function
         buf: a memoryview of buffer to fill
@@ -266,12 +344,22 @@ class Poller(object):
                         yield -1
                         return
 
-    def enqueue_write(self, fd, data):
-        info = self.resources[fd]
-        dataq = info[WRAPPED].dataq
-        if not dataq and info[WPOLL] is False:
-            self.wpending[fd] = info[WGEN]
-        dataq.append(data)
+    def enqueue_write(self, args):
+        """Enqueue a write.
+
+        args: fd, q, func, data
+            fd: int, fileno of resource
+            q: dataq to check length
+            func: function for adding data.
+            data: data to add
+        """
+        fd, q, func, data = args
+        if not q:
+            info = self.resources[fd]
+            if info[WPOLL] is False:
+                self.wpending[fd] = info[WGEN]
+        func(data)
+
 
     # ------------------------------
     # internal interface
@@ -286,7 +374,7 @@ class Poller(object):
                 self.tasks = []
             for task in self.tasks:
                 try:
-                    task[0](*task[1:])
+                    task[0](task[1])
                 except TypeError:
                     if task is None:
                         self.running = False
@@ -346,6 +434,7 @@ class Poller(object):
         orig = self.resources.pop(fd, None)
         if orig is not None:
             self.remove(fd)
+            self.handle_error(self, orig)
         if wrapped[RPOLL]:
             self.rpoll(fd)
 
@@ -354,10 +443,12 @@ class Poller(object):
 
         This should be called from same thread as the polling thread.
         """
-        self.nopoll(fd)
         self.rpending.pop(fd, None)
         self.wpending.pop(fd, None)
         self.resources.pop(fd, None)
+
+    def ready(self):
+        return bool(self.out)
 
 
 class Poller2(Poller):

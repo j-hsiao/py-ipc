@@ -51,6 +51,7 @@ class Gen(object):
         self.poller = poller
         self.f = f
         self.dataq = collections.deque()
+        self.fileno = self.f.fileno
 
     def write(self, data):
         with self.poller.lock:

@@ -11,6 +11,7 @@ Otherwise
     N bytes: the data.
 """
 import collections
+import io
 import struct
 
 from . import gen
@@ -31,6 +32,8 @@ WHEAD = [
 
 class VPreLen(gen.Gen):
     """Read and write data with variable data length prefix.
+
+    This has lower bandwidth for many short messages but slower parsing.
 
     1 byte:
         0-63: following data is 0-63 bytes
@@ -68,24 +71,38 @@ class VPreLen(gen.Gen):
                     return length
             raise ValueError('Data length too large ({})'.format(length))
 
-QFMT = struct.Struct('>Q')
+Q = struct.Struct('>Q')
+L = struct.Struct('>L')
+H = struct.Struct('>H')
+B = struct.Struct('>B')
 class FPreLen(gen.Gen):
-    """Read and write data with 8 bytes of length."""
+    """Read and write data with 8 bytes of length.
+
+    This will have larger bandwidth for reasonably sized messages but
+    faster parsing.
+    """
+    def __init__(self, poller, f, fmt=Q):
+        self.fmt = fmt
+
     def readloop(self):
-        readall = gen.readall
-
-        out = poller.out
+        fmt = self.fmt
+        fill_buf = self.poller.fill_buf
         readinto = f.readinto
-
-        MAX_HEAD = WHEAD[-1][0].size+1
+        buf = memoryview(bytearray(io.DEFAULT_BUFFER_SIZE))
         header = bytearray(MAX_HEAD)
+        headersize = 1 + self.fmt.size
+        fd = self.fileno()
+        start = 0
         while 1:
-            pass
+            for amt in fill_buf(fd, readinto, buf[start:], headersize-start):
+                yield amt
+            start += amt
 
     def write(self, data):
+        dq = self.dataq
         with self.poller.lock:
-            self.poller.tasks.append(
-                (self.poller.enqueue_write, self.f.fileno(), data))
+            self.poller.tasks.append((
+                self.poller.enqueue_write,
+                (self.fileno(), dq, dq.extend,
+                (self.fmt.pack(len(data)), data))))
         self.poller.control.write(b' ')
-        QFMT.pack(len(data))
-        data

@@ -1,11 +1,12 @@
 from jhsiao.tests import bench
+import sys
 
 setup = '''
 
-from jhsiao.ipc.polling.gen import vprelen
+from jhsiao.ipc.polling.gen import prelen
 
-RHEAD = vprelen.RHEAD
-WHEAD = vprelen.WHEAD
+RHEAD = prelen.RHEAD
+WHEAD = prelen.WHEAD
 length = {}
 WHEADS = [None]*65
 
