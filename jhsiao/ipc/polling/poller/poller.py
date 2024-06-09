@@ -26,12 +26,11 @@ try:
 except ImportError:
     errno = None
 
-
-
-
 EAGAIN = getattr(errno, 'EAGAIN', 11)
 EWOULDBLOCK = getattr(errno, 'EWOULDBLOCK', 10035)
 EINTR = getattr(errno, 'EINTR', 4)
+
+from . import rwpair
 
 try:
     wait_for = threading.Condition.wait_for
@@ -64,8 +63,6 @@ except AttributeError:
                     return False
                 timeout = end - now
 
-from . import rwpair
-
 FD = 0
 OBJ = 1
 RGEN = 2
@@ -80,7 +77,7 @@ def default_handler(poller, info):
     This is called after info read and write both error out and the
     object is removed from polling.
     """
-    print('fd', info[FD] 'disconnected.')
+    print('fd', info[FD], 'disconnected.')
     if info[WRAPPED].dataq:
         print('Outstanding writes:', sum(map(len, info[WRAPPED].dataq)))
     info[OBJ].close()
@@ -188,7 +185,6 @@ class Poller(object):
         self.stop()
         for item in list(self.resources):
             self.remove(item)
-        self.statechanged.clear()
         self.control.close()
 
     def step(self):
@@ -238,10 +234,12 @@ class Poller(object):
 
     def stop(self):
         """Stop polling thread."""
-        with self.lock:
-            self.tasks.append(None)
-        self.control.write(b'0')
-        self.thread.join()
+        if getattr(self, 'thread', None) is not None:
+            with self.lock:
+                self.tasks.append(None)
+            self.control.write(b'0')
+            self.thread.join()
+            del self.thread
 
     def write_items(self, fd, dataq, write):
         """Generator to write items in dataq.
@@ -372,7 +370,7 @@ class Poller(object):
                 tasks = self.tasks
                 self.control.read(len(tasks))
                 self.tasks = []
-            for task in self.tasks:
+            for task in tasks:
                 try:
                     task[0](task[1])
                 except TypeError:
@@ -382,6 +380,12 @@ class Poller(object):
                     traceback.print_exc()
                 except Exception:
                     traceback.print_exc()
+            wrapped = self.resources[self.control.fileno()]
+            wrapped[RPOLL] = True
+            if wrapped[WPOLL]:
+                self.rwpoll(wrapped[0])
+            else:
+                self.rpoll(wrapped[0])
             yield
 
     def rpoll(self, fd):
@@ -397,7 +401,7 @@ class Poller(object):
         """(re)Register for no polling."""
         raise NotImplementedError
 
-    def wrap(self, fd, resource):
+    def wrap(self, resource):
         """Wrap a resource.
 
         Return [
@@ -416,8 +420,9 @@ class Poller(object):
                 None: read error, not handled or polled
         ]
         """
+        fd = resource.fileno()
         wrapped = self._wrap(self, resource)
-        wgen = gettattr(wrapped, 'writeloop', None)
+        wgen = getattr(wrapped, 'writeloop', None)
         if wgen is not None:
             wgen = wgen()
         return [
@@ -435,6 +440,7 @@ class Poller(object):
         if orig is not None:
             self.remove(fd)
             self.handle_error(self, orig)
+        self.resources[fd] = wrapped
         if wrapped[RPOLL]:
             self.rpoll(fd)
 

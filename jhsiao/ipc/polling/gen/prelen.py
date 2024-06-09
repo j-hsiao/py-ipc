@@ -82,6 +82,7 @@ class FPreLen(gen.Gen):
     faster parsing.
     """
     def __init__(self, poller, f, fmt=Q):
+        super(FPreLen, self).__init__(poller, f)
         self.fmt = fmt
 
     def readloop(self):
