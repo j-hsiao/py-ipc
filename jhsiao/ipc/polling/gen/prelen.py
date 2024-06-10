@@ -86,18 +86,59 @@ class FPreLen(gen.Gen):
         self.fmt = fmt
 
     def readloop(self):
-        fmt = self.fmt
-        fill_buf = self.poller.fill_buf
-        readinto = f.readinto
-        buf = memoryview(bytearray(io.DEFAULT_BUFFER_SIZE))
-        header = bytearray(MAX_HEAD)
-        headersize = 1 + self.fmt.size
-        fd = self.fileno()
-        start = 0
-        while 1:
-            for amt in fill_buf(fd, readinto, buf[start:], headersize-start):
-                yield amt
-            start += amt
+        try:
+            poller = self.poller
+            fmt = self.fmt
+            fill_buf = poller.fill_buf
+            readinto = f.readinto
+            DEFAULT_BUFFER_SIZE = io.DEFAULT_BUFFER_SIZE
+            buf = memoryview(bytearray(DEFAULT_BUFFER_SIZE))
+            header = bytearray(MAX_HEAD)
+            headersize = self.fmt.size
+            fd = self.fileno()
+            wrapped = poller.resources[fd]
+            datastart = dataend = 0
+            while 1:
+                if dataend - datastart < headersize:
+                    target = datastart + headersize
+                    if target > DEFAULT_BUFFER_SIZE:
+                        extra = buf[datastart:dataend]
+                        dataend -= datastart
+                        buf[:dataend] = extra
+                        datastart = 0
+                        target = headersize
+                    for amt in fill_buf(fd, readinto, buf[dataend:], headersize):
+                        yield
+                    dataend += amt
+                msgsize = fmt.unpack_from(buf, datastart)[0]
+                datastart += headersize
+                target = datastart + msgsize
+                if target > DEFAULT_BUFFER_SIZE:
+                    if target > DEFAULT_BUFFER_SIZE:
+                        out = memoryview(bytearray(msgsize))
+                        current = dataend-datastart
+                        out[:current] = buf[datastart:dataend]
+                        for amt in fill_buf(fd, readinto, out[dataend-datastart:], msgsize-current):
+                            yield
+                        with poller.lock:
+                            poller.out.append((wrapped, out))
+                        dataend = datastart = 0
+                        continue
+                    else:
+                        extra = buf[datastart:dataend]
+                        dataend -= datastart
+                        buf[:dataend] = extra
+                        datastart = 0
+                        target = msgsize
+                if dataend < target:
+                    for amt in fill_buf(fd, readinto, out[dataend:], target-dataend):
+                        yield
+                    dataend += amt
+                with poller.lock:
+                    poller.out.append((wrapped, buf[datastart:target].tobytes()))
+                datastart = target
+        except Exception:
+            self.poller.read_error(self.f.fileno())
 
     def write(self, data):
         dq = self.dataq

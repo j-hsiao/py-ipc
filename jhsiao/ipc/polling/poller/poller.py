@@ -284,6 +284,10 @@ class Poller(object):
                 self.statechanged.add(fd)
                 yield
 
+    def read_error(self, fd):
+        self.resources[fd][RPOLL] = None
+        self.statechanged.add(fd)
+
     def fill_buf(self, fd, readinto, buf, target):
         """A generator to read until buf is full.
 
