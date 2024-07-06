@@ -59,7 +59,8 @@ class Gen(object):
                 (self.poller.enqueue_write, self.f.fileno(), data))
         self.poller.control.write(b' ')
 
-    def readloop(self):
+    def process_loop(self):
+        """Yield buffers to fill.  Process read data."""
         raise NotImplementedError
 
     def writeloop(self):
