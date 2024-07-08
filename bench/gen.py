@@ -19,7 +19,81 @@ naming:
 ------------------------------
 results
 ------------------------------
-TODO
+i5-8265u @ 1.60GHz
+
+1 read per message
+$ py bench/gen.py --readchunk 512 --target 512 --total $((8192*1000)) -n 1
+----------
+generators
+All results match!
+                                                      :   min    mean     max
+           read_inner_processing_inner_NoStopIteration: 0.13774 0.14070 0.14706
+             read_inner_processing_inner_StopIteration: 0.13919 0.14426 0.15308
+                             read_inner_processing_sub: 0.16523 0.16638 0.17037
+                      read_inner_processing_func_inner: 0.16748 0.17176 0.17814
+      read_outer_processing_inner_readjob_merge_assign: 0.17212 0.17505 0.17894
+            read_outer_processing_inner_readjob_assign: 0.17471 0.17743 0.18280
+                read_sub_processing_inner_ReuseReadSub: 0.17697 0.19012 0.22882
+read_outer_processing_func_outer_readjob_assign_merged: 0.17972 0.18622 0.19704
+           read_outer_processing_inner_readjob_replace: 0.18700 0.19071 0.19891
+         read_outer_processing_inner_readjob_sepassign: 0.18774 0.22385 0.38730
+                      read_sub_processing_inner_nosend: 0.22436 0.24038 0.27034
+                             read_sub_processing_inner: 0.23172 0.24392 0.26157
+       read_outer_processing_inner_readjob_sliceassign: 0.23641 0.30004 0.48568
+
+multiple reads per message
+$ py bench/gen.py --readchunk 512 --target 2048 --total $((8192*1000)) -n 1
+----------
+generators
+All results match!
+                                                      :   min    mean     max
+             read_inner_processing_inner_StopIteration: 0.13813 0.14941 0.17836
+           read_inner_processing_inner_NoStopIteration: 0.14270 0.14679 0.15003
+      read_outer_processing_inner_readjob_merge_assign: 0.14371 0.14613 0.14959
+           read_outer_processing_inner_readjob_replace: 0.14526 0.14948 0.15326
+         read_outer_processing_inner_readjob_sepassign: 0.14528 0.14894 0.15394
+read_outer_processing_func_outer_readjob_assign_merged: 0.14530 0.14616 0.14757
+            read_outer_processing_inner_readjob_assign: 0.14641 0.15068 0.15729
+                      read_inner_processing_func_inner: 0.14818 0.15420 0.15894
+       read_outer_processing_inner_readjob_sliceassign: 0.14899 0.15156 0.15975
+                             read_inner_processing_sub: 0.14918 0.15335 0.16019
+                      read_sub_processing_inner_nosend: 0.15986 0.16323 0.16949
+                read_sub_processing_inner_ReuseReadSub: 0.16042 0.16835 0.17537
+                             read_sub_processing_inner: 0.16465 0.16869 0.17425
+
+multiple messages per read
+$ py bench/gen.py --readchunk 512 --target 128 --total $((8192*1000)) -n 1
+----------
+generators
+All results match!
+                                                      :   min    mean     max
+           read_inner_processing_inner_NoStopIteration: 0.19253 0.19967 0.20300
+             read_inner_processing_inner_StopIteration: 0.19501 0.20039 0.20359
+                             read_inner_processing_sub: 0.21567 0.22423 0.23035
+                      read_inner_processing_func_inner: 0.22068 0.23179 0.24482
+            read_outer_processing_inner_readjob_assign: 0.22538 0.23216 0.23654
+      read_outer_processing_inner_readjob_merge_assign: 0.22604 0.23033 0.23463
+                read_sub_processing_inner_ReuseReadSub: 0.22669 0.23252 0.24473
+read_outer_processing_func_outer_readjob_assign_merged: 0.22881 0.23701 0.24166
+         read_outer_processing_inner_readjob_sepassign: 0.23280 0.24041 0.25449
+           read_outer_processing_inner_readjob_replace: 0.23364 0.23898 0.24653
+                      read_sub_processing_inner_nosend: 0.23587 0.24284 0.25107
+       read_outer_processing_inner_readjob_sliceassign: 0.24174 0.24535 0.25333
+                             read_sub_processing_inner: 0.24802 0.25326 0.26084
+
+
+Focusing more on long-running connections, read and processing in a
+single generator always performs best in all cases.  For read:message
+ratio <= 1, read_inner_processing_sub is generally, good.  However, when
+ratio >= 1, read_inner_processing_sub drops fairly low On the other
+hand, across all test cases, read_outer_processing_inner seems to
+perform fairly consistently.  The relative performance difference is
+fairly consistent, the faster method is about 4% faster on this machine.
+In the case of multiple reads per message, if the server is very busy,
+being overwhelmed, the data will probably be buffered anyways which
+means the read/message ratio will eventually drop towards 1 or below.
+Since read_inner_processing_sub performs better in this case, plus, due
+to the ease of implementation, it will be the chosen method.
 
 """
 from jhsiao.tests import bench
