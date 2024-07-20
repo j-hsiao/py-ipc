@@ -21,6 +21,7 @@ impls:
 import io
 import threading
 import traceback
+import collections
 try:
     import errno
 except ImportError:
@@ -36,6 +37,7 @@ try:
     wait_for = threading.Condition.wait_for
 except AttributeError:
     def wait_for(cond, pred, timeout=None):
+        """Wait for a predicate."""
         result = pred()
         if result or timeout == 0:
             return result
