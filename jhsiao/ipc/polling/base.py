@@ -10,11 +10,14 @@ are assumed to be writeable until EWOULDBLOCK or EAGAIN, etc.
 Resources should thus be in non-blocking mode.
 
 """
+from __future__ import print_function
+
 __all__ = ['Resource', 'Poller']
 import collections
 import io
 import threading
 import traceback
+import sys
 try:
     import errno
 except ImportError:
@@ -28,15 +31,21 @@ from . import queue, rwpair
 
 
 FD = 0
-OBJ = 1
+WRAPPED = 1
 RGEN = 2
 WGEN = 3
-WRAPPED = 4
-RPOLL = 5
-WPOLL = 6
+# True/False: current polling state
+# None: Do not poll
+RPOLL = 4
+WPOLL = 5
 
 class Resource(object):
-    """Wrap a resource."""
+    """Wrap a resource.
+
+    Provide reading and writing generators.  Writing should be done
+    through this wrapper class to format data into the underlying
+    resource.
+    """
     def __init__(self, f, poller, rq):
         """Initialize a resource.
 
@@ -49,12 +58,16 @@ class Resource(object):
         self.f = f
         self.fileno = f.fileno
 
-    def rprocess(self, poller)
+    def rprocess(self)
         """Process data read from the wrapped resource.
 
         Parsed results should be placed into self.rq.
         """
         raise NotImplementedError
+
+    def wprocess(self):
+        """Step through writing data from queue."""
+
 
     def write(self):
         # TODO: write and process data,
@@ -64,12 +77,14 @@ class Resource(object):
 
 TASK_REGISTER = 0
 TASK_WRITE = 1
+TASK_REMOVE = 2
+TASK_STOP = 3
 class Poller(object):
     """Polling class for handling resources.
 
     Incoming data is broken up into messasges.
     """
-    def __init__(self, wrapper, sepq=False):
+    def __init__(self, wrapper, sepq=False, on_remove=None):
         """Initialize a Poller.
 
         wrapper: Callable to wrap a resource.  The result should be a
@@ -80,38 +95,140 @@ class Poller(object):
               data on any resource.  On the other hand, sharing a queue
               means it is possible to wait for any resource to have data
               ready, but cannot wait for some particular resource.
+        on_remove: callable on a list, called when resource is removed.
         """
+        self.thread = None
         self.lock = threading.Lock()
         self.wrapper = wrapper
-        self.resources = {}
         self.sepq = sepq
         if not sepq:
             self.q = queue.Queue(lock=self.lock)
-        self.tasks = [], []
+        self.tasks = []
+        if on_remove is None:
+            self.on_remove = self._default_on_remove
+        else:
+            self.on_remove = on_remove
+
         self.rw = rwpair()
+        self.thread = threading.Thread(target=self._run)
+        self.thread.start()
 
     # ------------------------------
     # Public interface.
     # ------------------------------
-    def send(self, resource, data):
-        """Enqueue data to be sent."""
-        with self.lock:
-            self.tasks[TASK_WRITE].append((resource, data))
+    def __del__(self):
+        if self.thread is not None:
+            with self.lock:
+                thread = self.thread
+                self.thread = None
+                self.tasks.append((TASK_STOP, None, None))
+            thread.join()
+    close = __del__
 
-    def register(self, resource):
+    def write_ready(self, resource):
+        """Signal there is data for writing for resource."""
+        with self.lock:
+            self.tasks.append((TASK_WRITE, resource, None))
+            self.rw.write(b'\n')
+
+    def register(self, resource, write=True):
         """Register a resource with this poller.
 
         Return the wrapped resource.
+        write: Also register the item for write polling.
+               Set to False if the resource should only be
+               polled for reading.
         """
-        if sepq:
+        if self.sepq:
             q = queue.Queue(lock=self.lock)
         else:
             q = self.q
         wrapped = self.wrapper(resource, self, q)
         with self.lock:
-            self.tasks[TASK_REGISTER].append(wrapped)
+            self.tasks.append((TASK_REGISTER, wrapped, write))
+            self.rw.write(b'\n')
         return wrapped
+
+    def remove(self, f):
+        """Mark an fd/resource for removal from poller.
+
+        on_remove will be called when actually removed.
+        """
+        fd = self._fd(f)
+        with self.lock:
+            self.tasks.append((TASK_REMOVE, fd, None))
+            self.rw.write(b'\n')
 
     # ------------------------------
     # Internal interface.
     # ------------------------------
+    @staticmethod
+    def _default_on_remove(item):
+        """Default removal callback."""
+        print('removed resource', file=sys.stderr)
+        print('  fd:', item[0], file=sys.stderr)
+
+    def _fd(self f):
+        if isinstance(f, int):
+            return f
+        else:
+            return f.fileno()
+
+    def _process_tasks(self, running, resources):
+        """Generator for processing tasks."""
+        rw = self.rw
+        on_remove = self.on_remove
+        while 1:
+            with self.lock:
+                tasks = self.tasks
+                if tasks:
+                    self.tasks = []
+                else:
+                    yield None
+                    continue
+            rw.read(len(tasks))
+            for tp, thing, extra in tasks:
+                if tp == TASK_REGISTER:
+                    fd = thing.fileno()
+                    resources[fd] = [
+                        fd,
+                        thing,
+                        thing.rprocess(),
+                        thing.wprocess(),
+                        True,
+                        False if extra else None,
+                    ]
+                elif tp == TASK_REMOVE:
+                    fd = thing.fileno()
+                    reading.pop(fd, None)
+                    writing.pop(fd, None)
+                    item = resources.pop(fd, None)
+                    if item:
+                        on_remove(item)
+
+                elif tp == TASK_WRITE:
+                    fd = thing.fileno()
+                    writing[fd] = resources[fd][WGEN]
+                elif tp == TASK_STOP:
+                    del running[:]
+                    yield None
+                    return
+            yield None
+
+
+    def _run(self):
+        resources = {}
+        reading = {}
+        writing = {}
+        running = [True]
+
+        resources[self.rw.fileno()] = [
+            self.rw.fileno(),
+            self,
+            self.rprocess
+            None,
+            True,
+            False
+        ]
+
+        while 1:
