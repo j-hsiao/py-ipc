@@ -68,7 +68,6 @@ class Resource(object):
     def wprocess(self):
         """Step through writing data from queue."""
 
-
     def write(self):
         # TODO: write and process data,
         # then throw to poller to do the actual sending?
@@ -174,7 +173,7 @@ class Poller(object):
         else:
             return f.fileno()
 
-    def _process_tasks(self, running, resources):
+    def _process_tasks_generator(self, running, resources, statechanged):
         """Generator for processing tasks."""
         rw = self.rw
         on_remove = self.on_remove
@@ -193,7 +192,7 @@ class Poller(object):
                     resources[fd] = [
                         fd,
                         thing,
-                        thing.rprocess(),
+                        self._readit(thing, statechanged),
                         thing.wprocess(),
                         True,
                         False if extra else None,
@@ -215,20 +214,67 @@ class Poller(object):
                     return
             yield None
 
+    def _readit(self, resource, statechanged):
+        """Wrap a processing generator with reading."""
+        readinto = resource.f.readinto
+        rgen = resource.rprocess()
+        view, current, target = next(rgen)
+        current = 0
+        fd = resource.fileno()
+        item = resources
+        while 1:
+            while 1:
+                try:
+                    amt = readinto(view)
+                except OSError as e:
+                    if e.errno in (EAGAIN, EWOULDBLOCK):
+                        item[RPOLL] = True
+                        statechanged.add(fd)
+                        yield
+                    elif e.errno == EINTR:
+                        continue
+                    else:
+                        traceback.print_exc()
+                        item[RGEN] = item[RPOLL] = None
+                        statechanged.add(fd)
+                        yield
+                except Exception:
+                    traceback.print_exc()
+                    item[RGEN] = item[RPOLL] = None
+                    statechanged.add(fd)
+                    yield
+                else:
+                    if amt:
+                        current += amt
+                        if amt >= target:
+                            view, current, target = rgen.send(current)
+                    else:
+                        statechanged.add(fd)
+                        if amt is None:
+                            item[RPOLL] = True
+                        else:
+                            item[RGEN] = item[RPOLL] = None
+                        yield
 
     def _run(self):
-        resources = {}
+        """Polling thread loop."""
         reading = {}
         writing = {}
+        statechanged = set()
         running = [True]
-
+        resources = {}
         resources[self.rw.fileno()] = [
             self.rw.fileno(),
             self,
-            self.rprocess
+            self._process_tasks_generator(
+                running, resources, statechanged)
             None,
-            True,
-            False
+            False,
+            None
         ]
-
         while 1:
+            for _ in reading.values():
+                next(_)
+            for _ in writing.values():
+                next(_)
+            # poll/add to 
