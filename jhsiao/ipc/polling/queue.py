@@ -56,9 +56,11 @@ class Queue(object):
     """A queue that also takes a lock as argument."""
     def __init__(self, maxsize=0, lock=None):
         if maxsize > 0:
-            self.maxsize = maxsize
+            self._maxsize = maxsize
+            self.push = self._push_max
         else:
-            self.maxsize = float('inf')
+            self._maxsize = None
+            self.push = self._push_ulim
         self.q = collections.deque()
         if lock is None:
             self.lock = threading.Lock()
@@ -77,17 +79,34 @@ class Queue(object):
     def _hasspace(self):
         return len(self.q) < self.maxsize
 
-    def push(self, item, timeout=None):
+    def _push_ulim(self, item, timeout=None):
         """Add an item to queue.
 
         Timeout if no space.
         """
-        hasspace = self.hasspace
-        with hasspace:
-            if wait_for(hasspace, self._hasspace, timeout):
-                self.q.append(item)
-            else:
-                raise queue.Full
+        with self.hasspace:
+            self.q.append(item)
+
+    def peek(self):
+        """Return the next item in the queue without removal.
+
+        Raise index error if no items.
+        """
+        with self.hasspace:
+            return self.q[0]
+
+    def popnexet(self):
+        """Pop the next item and return the item after that.
+
+        Effectively:
+            pop()
+            return peek()
+        Raise index error if no items.
+        """
+        with self.hasspace:
+            q = self.q
+            q.popleft()
+            return q[0]
 
     def pop(self, timeout=None):
         """Remove an item from queue.
@@ -98,5 +117,15 @@ class Queue(object):
         with hasdata:
             if wait_for(hasdata, self._hasdata, timeout):
                 return self.q.popleft()
+
+    def _push_max(self, item, timeout=None):
+        """Add an item to queue.
+
+        Timeout if no space.
+        """
+        hasspace = self.hasspace
+        with hasspace:
+            if wait_for(hasspace, self._hasspace, timeout):
+                self.q.append(item)
             else:
-                raise queue.Empty
+                raise queue.Full
