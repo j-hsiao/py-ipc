@@ -53,7 +53,7 @@ class Resource(object):
         poller: A Poller instance to handle this resource.
         """
         self.rq = rq
-        self.wq = collections.deque()
+        self.wq = queue.Queue()
         self.pop = self.rq.pop
         self.f = f
         self.fileno = f.fileno
@@ -65,8 +65,19 @@ class Resource(object):
         """
         raise NotImplementedError
 
-    def wprocess(self):
+    def wprocess(self, writing):
         """Step through writing data from queue."""
+        wq = self.wq
+        chunk = wq.peek()
+        while 1:
+            #TODO: full write chunk
+            try:
+                chunk = wq.popnext()
+            except IndexError:
+                # no more data to write, remove from writing
+                writing.pop(fd)
+                yield
+                chunk = wq.peek()
 
     def write(self):
         # TODO: write and process data,

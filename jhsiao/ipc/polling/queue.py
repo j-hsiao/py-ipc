@@ -55,11 +55,11 @@ except AttributeError:
 class Queue(object):
     """A queue that also takes a lock as argument."""
     def __init__(self, maxsize=0, lock=None):
-        if maxsize > 0:
-            self._maxsize = maxsize
+        if maxsize is not None and maxsize > 0:
+            self.maxsize = maxsize
             self.push = self._push_max
         else:
-            self._maxsize = None
+            self.maxsize = None
             self.push = self._push_ulim
         self.q = collections.deque()
         if lock is None:
