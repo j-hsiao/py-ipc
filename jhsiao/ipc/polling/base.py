@@ -29,7 +29,6 @@ EINTR = getattr(errno, 'EINTR', 4)
 
 from . import queue, rwpair
 
-
 FD = 0
 WRAPPED = 1
 RGEN = 2
@@ -45,45 +44,128 @@ class Resource(object):
     Provide reading and writing generators.  Writing should be done
     through this wrapper class to format data into the underlying
     resource.
+
+    _FORMAT: extend or append depending on whether format returns a single
+    memoryview or a series of memoryviews
     """
+    _FORMAT = 'append'
     def __init__(self, f, poller, rq):
         """Initialize a resource.
 
         f: a file-like object.
         poller: A Poller instance to handle this resource.
+        rq: queue to put read messages into.
         """
         self.rq = rq
         self.wq = queue.Queue()
         self.pop = self.rq.pop
         self.f = f
         self.fileno = f.fileno
+        self._add = getattr(self.wq.q, self._FORMAT)
+        self.poller = poller
+        gen = self.writegen()
+        next(gen)
+        self.write = gen.send
+
+    def write(self, data):
+        """Write data to resource.
+
+        This is just a place holder and will be replaced with a
+        callable.
+        """
+        pass
+
 
     def rprocess(self)
         """Process data read from the wrapped resource.
 
+        This is a generator that should yield 3-tuples of
+        (memoryview, currentposition, targetposition).
+        The memoryview will be filled at least up to targetposition.
+        The actual amount will be sent via .send()
         Parsed results should be placed into self.rq.
         """
         raise NotImplementedError
 
-    def wprocess(self, writing):
-        """Step through writing data from queue."""
+    def wprocess(self, statechanged):
+        """Step through writing data from queue.
+
+        statechanged: set of int fds that changed state.
+        """
         wq = self.wq
-        chunk = wq.peek()
+        view = wq.peek()
+        write = self.f.write
+        fd = self.fileno()
+        item = resources[fd]
+        tot = 0
+        target = len(view)
         while 1:
-            #TODO: full write chunk
             try:
-                chunk = wq.popnext()
-            except IndexError:
-                # no more data to write, remove from writing
-                writing.pop(fd)
+                amt = write(view[tot:])
+            except OSError as e:
+                if e.errno in (EAGAIN, EWOULDBLOCK):
+                    item[WPOLL] = True
+                    statechanged.add(fd)
+                    yield
+                elif e.errno == EINTR:
+                    continue
+                else:
+                    traceback.print_exc()
+                    item[WGEN] = item[WPOLL] = None
+                    statechanged.add(fd)
+                    yield
+            except Exception:
+                traceback.print_exc()
+                item[WGEN] = item[WPOLL] = None
+                statechanged.add(fd)
                 yield
-                chunk = wq.peek()
+            else:
+                if amt:
+                    tot += amt
+                    if target <= tot:
+                        try:
+                            view = wq.popnext()
+                        except IndexError:
+                            yield
+                            view = wq.peek()
+                        else:
+                            yield
+                        tot = 0
+                        target = len(view)
+                else:
+                    statechanged.add(fd)
+                    if amt is None:
+                        item[WPOLL] = True
+                    else:
+                        item[WGEN] = item[WPOLL] = None
+                    yield
 
-    def write(self):
-        # TODO: write and process data,
-        # then throw to poller to do the actual sending?
-        pass
+    def format(self, data):
+        """Format data into a sequence of memoryview."""
+        raise NotImplementedError
 
+    def writegen(self):
+        """Use a generator
+        """
+        data = yield
+        wq = self.wq
+        q = wq.q
+        hasspace = wq.hasspace:
+        fd = self.fileno()
+        write_ready = self.poller.write_ready
+        fmt = self.format
+        while 1:
+            with hasspace:
+                if not len(q):
+                    write_ready(fd)
+            self._add(fmt(data))
+                data = yield
+
+
+    def detach(self):
+        f = self.f
+        self.write = self.poller = self.f = None
+        return f
 
 TASK_REGISTER = 0
 TASK_WRITE = 1
@@ -137,6 +219,8 @@ class Poller(object):
 
     def write_ready(self, resource):
         """Signal there is data for writing for resource."""
+        if not isinstance(resource, int):
+            resource = resource.fileno()
         with self.lock:
             self.tasks.append((TASK_WRITE, resource, None))
             self.rw.write(b'\n')
@@ -204,7 +288,7 @@ class Poller(object):
                         fd,
                         thing,
                         self._readit(thing, statechanged),
-                        thing.wprocess(),
+                        thing.wprocess(statechanged),
                         True,
                         False if extra else None,
                     ]
@@ -226,46 +310,49 @@ class Poller(object):
             yield None
 
     def _readit(self, resource, statechanged):
-        """Wrap a processing generator with reading."""
+        """Wrap a processing generator with reading.
+
+        resource: The wrapped Resource instance.
+        statechanged: set of int fds that changed state.
+        """
         readinto = resource.f.readinto
         rgen = resource.rprocess()
         view, current, target = next(rgen)
         current = 0
         fd = resource.fileno()
-        item = resources
+        item = self.resources[fd]
         while 1:
-            while 1:
-                try:
-                    amt = readinto(view)
-                except OSError as e:
-                    if e.errno in (EAGAIN, EWOULDBLOCK):
-                        item[RPOLL] = True
-                        statechanged.add(fd)
-                        yield
-                    elif e.errno == EINTR:
-                        continue
-                    else:
-                        traceback.print_exc()
-                        item[RGEN] = item[RPOLL] = None
-                        statechanged.add(fd)
-                        yield
-                except Exception:
+            try:
+                amt = readinto(view[current:])
+            except OSError as e:
+                if e.errno in (EAGAIN, EWOULDBLOCK):
+                    item[RPOLL] = True
+                    statechanged.add(fd)
+                    yield
+                elif e.errno == EINTR:
+                    continue
+                else:
                     traceback.print_exc()
                     item[RGEN] = item[RPOLL] = None
                     statechanged.add(fd)
                     yield
+            except Exception:
+                traceback.print_exc()
+                item[RGEN] = item[RPOLL] = None
+                statechanged.add(fd)
+                yield
+            else:
+                if amt:
+                    current += amt
+                    if amt >= target:
+                        view, current, target = rgen.send(current)
                 else:
-                    if amt:
-                        current += amt
-                        if amt >= target:
-                            view, current, target = rgen.send(current)
+                    statechanged.add(fd)
+                    if amt is None:
+                        item[RPOLL] = True
                     else:
-                        statechanged.add(fd)
-                        if amt is None:
-                            item[RPOLL] = True
-                        else:
-                            item[RGEN] = item[RPOLL] = None
-                        yield
+                        item[RGEN] = item[RPOLL] = None
+                    yield
 
     def _run(self):
         """Polling thread loop."""
@@ -288,4 +375,21 @@ class Poller(object):
                 next(_)
             for _ in writing.values():
                 next(_)
+
+            if statechanged:
+                # change state
             # poll/add to 
+            #
+    # ------------------------------
+    # required subclass impls
+    # ------------------------------
+    def rwpoll(self, fd):
+        """Set polling state of fd to read and write polling."""
+        raise NotImplementedError
+
+    def wpoll(self, fd):
+        """Set polling state of fd to write polling."""
+        raise NotImplementedError
+    def rpoll(self, fd):
+        """Set polling state of fd to read polling."""
+        raise NotImplementedError
