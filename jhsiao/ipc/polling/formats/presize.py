@@ -36,8 +36,8 @@ class Presize(base.Resource):
 
         The generator.send() method will replace self.format
         """
-        pack = self.fmt.pack
         data = yield
+        pack = self.fmt.pack
         while 1:
             data = yield memoryview(pack(len(data))), data
 

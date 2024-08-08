@@ -54,6 +54,11 @@ class Resource(object):
 
         f: a file-like object.
         poller: A Poller instance to handle this resource.
+            poller should have:
+                resources: dict of fd:
+                           [fd, item, rgen, wgen, rpoll, wpoll])
+                write_ready(): method to indicate data is enqueued for
+                               writing.
         rq: queue to put read messages into.
         """
         self.rq = rq
@@ -96,12 +101,12 @@ class Resource(object):
         view = wq.peek()
         write = self.f.write
         fd = self.fileno()
-        item = resources[fd]
-        tot = 0
+        item = self.poller.resources[fd]
+        pos = 0
         target = len(view)
         while 1:
             try:
-                amt = write(view[tot:])
+                amt = write(view[pos:])
             except OSError as e:
                 if e.errno in (EAGAIN, EWOULDBLOCK):
                     item[WPOLL] = True
@@ -121,8 +126,8 @@ class Resource(object):
                 yield
             else:
                 if amt:
-                    tot += amt
-                    if target <= tot:
+                    pos += amt
+                    if target <= pos:
                         try:
                             view = wq.popnext()
                         except IndexError:
@@ -130,7 +135,7 @@ class Resource(object):
                             view = wq.peek()
                         else:
                             yield
-                        tot = 0
+                        pos = 0
                         target = len(view)
                 else:
                     statechanged.add(fd)
@@ -145,8 +150,7 @@ class Resource(object):
         raise NotImplementedError
 
     def writegen(self):
-        """Use a generator
-        """
+        """Generator to set local variables. send() data to write."""
         data = yield
         wq = self.wq
         q = wq.q
@@ -158,9 +162,8 @@ class Resource(object):
             with hasspace:
                 if not len(q):
                     write_ready(fd)
-            self._add(fmt(data))
-                data = yield
-
+                self._add(fmt(data))
+            data = yield
 
     def detach(self):
         f = self.f

@@ -69,6 +69,10 @@ class Queue(object):
         self.hasdata = threading.Condition(self.lock)
         self.hasspace = threading.Condition(self.lock)
 
+    def __len__(self):
+        with self.hasdata:
+            return len(self.q)
+
     def qsize(self):
         with self.lock:
             return len(self.q)
