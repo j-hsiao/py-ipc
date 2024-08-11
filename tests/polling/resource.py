@@ -30,10 +30,10 @@ class DummyPoller():
                 thing,
                 None, None, False, False]}
 
-    def write_ready(self):
+    def write_ready(self, fd):
         pass
 
-def test_resource(fnc):
+def _test_resource(fnc):
     def run_test():
         resource, messages, formatted, rq = fnc()
         statechanged = set()
@@ -72,15 +72,15 @@ def test_resource(fnc):
     return run_test
 
 
-@test_resource
-def test_presize(fmt):
+@_test_resource
+def test_presize(fmt='>Q'):
     messages = [
         b'hello',
         b'world',
         b'hello world',
         b'whatever goodbye.'
     ]
-    structfmt = struct.struct(fmt)
+    structfmt = struct.Struct(fmt)
     formatted = bytearray(sum(map(len, messages)) + len(messages)*structfmt.size)
     pos = 0
     for message in messages:
@@ -88,6 +88,6 @@ def test_presize(fmt):
         pos += structfmt.size
         formatted[pos:pos+len(message)] = message
         pos += len(message)
-    dummy = DummyFD()
+    dummy = DummyFD(formatted)
     rq = queue.Queue()
     return presize.Presize(dummy, DummyPoller(dummy), rq, fmt), messages, formatted, rq

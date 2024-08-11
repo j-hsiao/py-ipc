@@ -99,7 +99,7 @@ class Queue(object):
         with self.hasspace:
             return self.q[0]
 
-    def popnexet(self):
+    def popnext(self):
         """Pop the next item and return the item after that.
 
         Effectively:

@@ -62,7 +62,7 @@ class Resource(object):
         rq: queue to put read messages into.
         """
         self.rq = rq
-        self.wq = queue.Queue()
+        self.wq = queue.Queue(lock=poller.lock)
         self.pop = self.rq.pop
         self.f = f
         self.fileno = f.fileno
@@ -81,7 +81,7 @@ class Resource(object):
         pass
 
 
-    def rprocess(self)
+    def rprocess(self):
         """Process data read from the wrapped resource.
 
         This is a generator that should yield 3-tuples of
@@ -131,6 +131,7 @@ class Resource(object):
                         try:
                             view = wq.popnext()
                         except IndexError:
+                            statechanged.add(fd)
                             yield
                             view = wq.peek()
                         else:
@@ -154,7 +155,7 @@ class Resource(object):
         data = yield
         wq = self.wq
         q = wq.q
-        hasspace = wq.hasspace:
+        hasspace = wq.hasspace
         fd = self.fileno()
         write_ready = self.poller.write_ready
         fmt = self.format
@@ -200,7 +201,7 @@ class Poller(object):
             self.q = queue.Queue(lock=self.lock)
         self.tasks = []
         if on_remove is None:
-            self.on_remove = self._default_on_remove
+            self.on_remove = self._on_remove_default
         else:
             self.on_remove = on_remove
 
@@ -212,20 +213,21 @@ class Poller(object):
     # Public interface.
     # ------------------------------
     def __del__(self):
+        """Stop polling and clean up resources."""
         if self.thread is not None:
             with self.lock:
                 thread = self.thread
                 self.thread = None
                 self.tasks.append((TASK_STOP, None, None))
+                self.rw.write(b'\n')
             thread.join()
     close = __del__
 
     def write_ready(self, resource):
         """Signal there is data for writing for resource."""
-        if not isinstance(resource, int):
-            resource = resource.fileno()
+        fd = self._fd(resource)
         with self.lock:
-            self.tasks.append((TASK_WRITE, resource, None))
+            self.tasks.append((TASK_WRITE, fd, None))
             self.rw.write(b'\n')
 
     def register(self, resource, write=True):
@@ -256,16 +258,19 @@ class Poller(object):
             self.tasks.append((TASK_REMOVE, fd, None))
             self.rw.write(b'\n')
 
-    # ------------------------------
-    # Internal interface.
-    # ------------------------------
     @staticmethod
-    def _default_on_remove(item):
+    def _on_remove_default(item):
         """Default removal callback."""
         print('removed resource', file=sys.stderr)
         print('  fd:', item[0], file=sys.stderr)
+        print('unwritten data:', )
 
-    def _fd(self f):
+    # ------------------------------
+    # Internal interface.
+    # ------------------------------
+
+    def _fd(self, f):
+        """Get fileno."""
         if isinstance(f, int):
             return f
         else:
@@ -287,22 +292,20 @@ class Poller(object):
             for tp, thing, extra in tasks:
                 if tp == TASK_REGISTER:
                     fd = thing.fileno()
-                    resources[fd] = [
-                        fd,
-                        thing,
+                    item = [
+                        fd, thing,
                         self._readit(thing, statechanged),
-                        thing.wprocess(statechanged),
-                        True,
-                        False if extra else None,
-                    ]
+                        None, True, None]
+                    if extra:
+                        item[WGEN] = thing.wprocess(statechanged)
+                        item[WPOLL] = False
+                    resources[fd] = item
+                    self.rpoll(fd)
                 elif tp == TASK_REMOVE:
-                    fd = thing.fileno()
-                    reading.pop(fd, None)
-                    writing.pop(fd, None)
-                    item = resources.pop(fd, None)
-                    if item:
-                        on_remove(item)
-
+                    fd = thing
+                    item = resources[fd]
+                    item[RPOLL] = item[WPOLL] = None
+                    statechanged.add(fd)
                 elif tp == TASK_WRITE:
                     fd = thing.fileno()
                     writing[fd] = resources[fd][WGEN]
@@ -310,20 +313,21 @@ class Poller(object):
                     del running[:]
                     yield None
                     return
+            # TODO? remove from read handling?
             yield None
 
-    def _readit(self, resource, statechanged):
+    def _readit(self, wrapped, statechanged):
         """Wrap a processing generator with reading.
 
-        resource: The wrapped Resource instance.
+        wrapped: The wrapped Resource instance.
         statechanged: set of int fds that changed state.
         """
-        readinto = resource.f.readinto
-        rgen = resource.rprocess()
+        readinto = wrapped.f.readinto
+        rgen = wrapped.rprocess()
         view, current, target = next(rgen)
         current = 0
-        fd = resource.fileno()
-        item = self.resources[fd]
+        fd = wrapped.fileno()
+        item = self.wrappeds[fd]
         while 1:
             try:
                 amt = readinto(view[current:])
@@ -368,7 +372,7 @@ class Poller(object):
             self.rw.fileno(),
             self,
             self._process_tasks_generator(
-                running, resources, statechanged)
+                running, resources, statechanged),
             None,
             False,
             None
@@ -380,12 +384,16 @@ class Poller(object):
                 next(_)
 
             if statechanged:
+                pass
                 # change state
             # poll/add to 
             #
     # ------------------------------
     # required subclass impls
     # ------------------------------
+    def unpoll(self, fd):
+        """Stop polling."""
+        raise NotImplementedError
     def rwpoll(self, fd):
         """Set polling state of fd to read and write polling."""
         raise NotImplementedError
