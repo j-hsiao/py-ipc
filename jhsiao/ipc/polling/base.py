@@ -37,6 +37,12 @@ WGEN = 3
 # None: Do not poll
 RPOLL = 4
 WPOLL = 5
+CHANGE = 6
+
+RCHANGED = 1
+WCHANGED = 2
+ACHANGED = 4
+
 
 class Resource(object):
     """Wrap a resource.
@@ -66,6 +72,7 @@ class Resource(object):
         self.pop = self.rq.pop
         self.f = f
         self.fileno = f.fileno
+        self.fd = self.fileno()
         self._add = getattr(self.wq.q, self._FORMAT)
         self.poller = poller
         gen = self.writegen()
@@ -100,7 +107,7 @@ class Resource(object):
         wq = self.wq
         view = wq.peek()
         write = self.f.write
-        fd = self.fileno()
+        fd = self.fd
         item = self.poller.resources[fd]
         pos = 0
         target = len(view)
@@ -110,6 +117,7 @@ class Resource(object):
             except OSError as e:
                 if e.errno in (EAGAIN, EWOULDBLOCK):
                     item[WPOLL] = True
+                    item[CHANGE] += WCHANGED
                     statechanged.add(fd)
                     yield
                 elif e.errno == EINTR:
@@ -117,11 +125,13 @@ class Resource(object):
                 else:
                     traceback.print_exc()
                     item[WGEN] = item[WPOLL] = None
+                    item[CHANGE] += WCHANGED
                     statechanged.add(fd)
                     yield
             except Exception:
                 traceback.print_exc()
                 item[WGEN] = item[WPOLL] = None
+                item[CHANGE] += WCHANGED
                 statechanged.add(fd)
                 yield
             else:
@@ -131,6 +141,7 @@ class Resource(object):
                         try:
                             view = wq.popnext()
                         except IndexError:
+                            item[CHANGE] += WCHANGED
                             statechanged.add(fd)
                             yield
                             view = wq.peek()
@@ -139,6 +150,7 @@ class Resource(object):
                         pos = 0
                         target = len(view)
                 else:
+                    item[CHANGE] += WCHANGED
                     statechanged.add(fd)
                     if amt is None:
                         item[WPOLL] = True
@@ -156,7 +168,7 @@ class Resource(object):
         wq = self.wq
         q = wq.q
         hasspace = wq.hasspace
-        fd = self.fileno()
+        fd = self.fd
         write_ready = self.poller.write_ready
         fmt = self.format
         while 1:
@@ -276,7 +288,9 @@ class Poller(object):
         else:
             return f.fileno()
 
-    def _process_tasks_generator(self, running, resources, statechanged):
+    class StopPollingError(Exception):
+        pass
+    def _process_tasks_generator(self, resources, statechanged):
         """Generator for processing tasks."""
         rw = self.rw
         on_remove = self.on_remove
@@ -291,11 +305,11 @@ class Poller(object):
             rw.read(len(tasks))
             for tp, thing, extra in tasks:
                 if tp == TASK_REGISTER:
-                    fd = thing.fileno()
+                    fd = thing.fd
                     item = [
                         fd, thing,
                         self._readit(thing, statechanged),
-                        None, True, None]
+                        None, True, None, 0]
                     if extra:
                         item[WGEN] = thing.wprocess(statechanged)
                         item[WPOLL] = False
@@ -305,15 +319,14 @@ class Poller(object):
                     fd = thing
                     item = resources[fd]
                     item[RPOLL] = item[WPOLL] = None
+                    item[CHANGE] = ACHANGED
                     statechanged.add(fd)
                 elif tp == TASK_WRITE:
-                    fd = thing.fileno()
-                    writing[fd] = resources[fd][WGEN]
+                    item = resources[thing]
+                    if item[WPOLL] is not None and not item[WPOLL]:
+                        writing[thing] = item[WGEN]
                 elif tp == TASK_STOP:
-                    del running[:]
-                    yield None
-                    return
-            # TODO? remove from read handling?
+                    raise self.StopPollingError('Stop polling')
             yield None
 
     def _readit(self, wrapped, statechanged):
@@ -324,16 +337,17 @@ class Poller(object):
         """
         readinto = wrapped.f.readinto
         rgen = wrapped.rprocess()
-        view, current, target = next(rgen)
-        current = 0
+        view, pos, target = next(rgen)
+        pos = 0
         fd = wrapped.fileno()
         item = self.wrappeds[fd]
         while 1:
             try:
-                amt = readinto(view[current:])
+                amt = readinto(view[pos:])
             except OSError as e:
                 if e.errno in (EAGAIN, EWOULDBLOCK):
                     item[RPOLL] = True
+                    item[CHANGE] += RCHANGED
                     statechanged.add(fd)
                     yield
                 elif e.errno == EINTR:
@@ -341,19 +355,22 @@ class Poller(object):
                 else:
                     traceback.print_exc()
                     item[RGEN] = item[RPOLL] = None
+                    item[CHANGE] += RCHANGED
                     statechanged.add(fd)
                     yield
             except Exception:
                 traceback.print_exc()
                 item[RGEN] = item[RPOLL] = None
+                item[CHANGE] += RCHANGED
                 statechanged.add(fd)
                 yield
             else:
                 if amt:
-                    current += amt
-                    if amt >= target:
-                        view, current, target = rgen.send(current)
+                    pos += amt
+                    if target <= pos:
+                        view, pos, target = rgen.send(pos)
                 else:
+                    item[CHANGE] += RCHANGED
                     statechanged.add(fd)
                     if amt is None:
                         item[RPOLL] = True
@@ -366,31 +383,91 @@ class Poller(object):
         reading = {}
         writing = {}
         statechanged = set()
-        running = [True]
         resources = {}
         resources[self.rw.fileno()] = [
             self.rw.fileno(),
             self,
             self._process_tasks_generator(
-                running, resources, statechanged),
+                resources, statechanged),
             None,
             False,
             None
         ]
-        while 1:
-            for _ in reading.values():
-                next(_)
-            for _ in writing.values():
-                next(_)
-
-            if statechanged:
-                pass
-                # change state
-            # poll/add to 
-            #
+        on_remove = self.on_remove
+        poll = self.poll
+        rpoll = self.rpoll
+        wpoll = self.wpoll
+        rwpoll = self.rwpoll
+        unpoll = self.unpoll
+        try:
+            while 1:
+                for _ in reading.values():
+                    next(_)
+                for _ in writing.values():
+                    next(_)
+                if statechanged:
+                    for fd in statechanged:
+                        item = resources[fd]
+                        if item[CHANGE] == RCHANGED:
+                            reading.pop(fd, None)
+                            if item[RPOLL]:
+                                if item[WPOLL]:
+                                    rwpoll(fd)
+                                else:
+                                    rpoll(fd)
+                            elif item[RPOLL] is None:
+                                if item[WPOLL] is None:
+                                    writing.pop(fd, None)
+                                    resources.pop(fd)
+                                    unpoll(fd)
+                                    on_remove(item)
+                        elif item[CHANGE] == WCHANGED:
+                            writing.pop(fd, None)
+                            if item[WPOLL]:
+                                if item[RPOLL]:
+                                    rwpoll(fd)
+                                else:
+                                    wpoll(fd)
+                            elif item[WPOLL] is None:
+                                if item[RPOLL] is None:
+                                    reading.pop(fd, None)
+                                    resources.pop(fd)
+                                    unpoll(fd)
+                                    on_remove(item)
+                        else:
+                            reading.pop(fd, None)
+                            writing.pop(fd, None)
+                            if item[WPOLL] is None and item[RPOLL] is None:
+                                resources.pop(fd)
+                                on_remove(item)
+                                unpoll(fd)
+                            elif item[WPOLL]:
+                                if item[RPOLL]:
+                                    rwpoll(fd)
+                                else:
+                                    wpoll(fd)
+                            else:
+                                assert item[RPOLL]
+                                rpoll(fd)
+                        item[CHANGE] = 0
+                    statechanged.clear()
+                if writing or reading:
+                    result = poll(0)
+                else:
+                    result = poll(None)
+                for fd, item in result:
+                    # TODO
+                    pass
+        except Exception:
+            pass
+        # TODO shutdown
     # ------------------------------
     # required subclass impls
     # ------------------------------
+    def poll(self, timeout):
+        """Poll registered file descriptors."""
+        raise NotImplementedError
+
     def unpoll(self, fd):
         """Stop polling."""
         raise NotImplementedError
